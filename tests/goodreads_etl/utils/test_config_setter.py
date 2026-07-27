@@ -25,6 +25,7 @@ def _reload_config_after_each_test():
 # _read_env_int
 # ---------------------------------------------------------------------------
 
+
 class TestReadEnvInt:
     """Tests for the `_read_env_int` environment variable parsing helper."""
 
@@ -39,7 +40,9 @@ class TestReadEnvInt:
         monkeypatch.setenv("SOME_INT_VAR", "123")
         assert _read_env_int(name="SOME_INT_VAR", default=42) == 123
 
-    def test_raises_value_error_when_env_var_not_numeric(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_raises_value_error_when_env_var_not_numeric(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Verify ValueError is raised when environment variable cannot be cast to int."""
         monkeypatch.delenv("SOME_INT_VAR", raising=False)
         monkeypatch.setenv("SOME_INT_VAR", "not-a-number")
@@ -58,6 +61,7 @@ class TestReadEnvInt:
 # _read_env_bool
 # ---------------------------------------------------------------------------
 
+
 class TestReadEnvBool:
     """Tests for the `_read_env_bool` environment variable parsing helper."""
 
@@ -66,13 +70,17 @@ class TestReadEnvBool:
         monkeypatch.delenv("SOME_BOOL_VAR", raising=False)
         assert _read_env_bool(name="SOME_BOOL_VAR", default=True) is True
 
-    def test_returns_default_when_env_var_unset_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_default_when_env_var_unset_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Verify fallback to False default when environment variable is missing."""
         monkeypatch.delenv("SOME_BOOL_VAR", raising=False)
         assert _read_env_bool(name="SOME_BOOL_VAR", default=False) is False
 
     @pytest.mark.parametrize("value", ["1", "true ", "True", "TRUE", "yes", " YES ", "on", "On"])
-    def test_returns_true_for_truthy_strings(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    def test_returns_true_for_truthy_strings(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
         """Verify string representations of truthy values parse correctly to True.
 
         Args:
@@ -83,7 +91,9 @@ class TestReadEnvBool:
         assert _read_env_bool(name="SOME_BOOL_VAR", default=False) is True
 
     @pytest.mark.parametrize("value", ["0", "false      ", "False", "no", "off", "ran-xdom", ""])
-    def test_returns_false_for_non_truthy_strings(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    def test_returns_false_for_non_truthy_strings(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
         """Verify falsy or unrecognized strings parse correctly to False.
 
         Args:
@@ -97,6 +107,7 @@ class TestReadEnvBool:
 # ---------------------------------------------------------------------------
 # Settings: defaults (no env vars set)
 # ---------------------------------------------------------------------------
+
 
 class TestSettingsDefaults:
     """Tests default values for `Settings` when no environment overrides are defined."""
@@ -112,11 +123,22 @@ class TestSettingsDefaults:
             None: Context passed to individual default value test methods.
         """
         env_vars = [
-            "GOODREADS_ROOT_URL", "HF_REPO_ID", "LOCAL_SCRAPED_IDS_PATH",
-            "SAMPLE_SIZE", "CHECKPOINT_EVERY", "MIN_BOOK_ID", "MAX_BOOK_ID",
-            "MAX_RANDOM_ID_ATTEMPTS", "MAX_CONCURRENCY", "MAX_TASKS_PER_MINUTE",
-            "NUM_RETRIES", "TIMEOUT_SECONDS", "USE_SESSION_POOL",
-            "RETRY_ON_BLOCKED", "MAX_SESSION_POOL_SIZE", "MAX_SESSION_ROTATIONS",
+            "GOODREADS_ROOT_URL",
+            "HF_REPO_ID",
+            "LOCAL_SCRAPED_IDS_PATH",
+            "SAMPLE_SIZE",
+            "CHECKPOINT_EVERY",
+            "MIN_BOOK_ID",
+            "MAX_BOOK_ID",
+            "MAX_RANDOM_ID_ATTEMPTS",
+            "MAX_CONCURRENCY",
+            "MAX_TASKS_PER_MINUTE",
+            "NUM_RETRIES",
+            "TIMEOUT_SECONDS",
+            "USE_SESSION_POOL",
+            "RETRY_ON_BLOCKED",
+            "MAX_SESSION_POOL_SIZE",
+            "MAX_SESSION_ROTATIONS",
         ]
         for var in env_vars:
             monkeypatch.delenv(var, raising=False)

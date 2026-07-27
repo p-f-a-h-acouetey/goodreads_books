@@ -1,9 +1,9 @@
-# .pre-commit-config.yaml - AUTOMATIC CODE QUALITY
+# .pre-commit-config.yaml - AUTOMATIC CODE QUALITY FOR ANY PYTHON PROJECT
 # Runs before EVERY git commit
 repos:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 1. RUFF - LINTING + FORMATTING (matches CI: ruff check . / ruff format --check .)
+  # 1. RUFF - LINTING + FORMATTING
   # ═══════════════════════════════════════════════════════════════════════════
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.0
@@ -13,14 +13,16 @@ repos:
       - id: ruff-format
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 2. MYPY - STATIC TYPE CHECKING (matches CI: uv run mypy src)
+  # 2. MYPY - STATIC TYPE CHECKING (runs via uv, sees all real dependencies)
   # ═══════════════════════════════════════════════════════════════════════════
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+  - repo: local
     hooks:
       - id: mypy
-        files: ^src/
-        args: [--python-version=3.12]
+        name: mypy
+        entry: uv run mypy src
+        language: system
+        pass_filenames: false
+        types: [python]
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 3. FILE CLEANLINESS

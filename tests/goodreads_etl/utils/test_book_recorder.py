@@ -11,7 +11,6 @@ from src.goodreads_etl.utils.book_recorder import (
     BookRecord,
 )
 
-
 REQUIRED_FIELDS = {
     "book_id": "1",
     "url": "https://www.goodreads.com/book/show/1",

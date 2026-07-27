@@ -10,7 +10,6 @@ import pytest
 from bs4 import BeautifulSoup
 
 from src.goodreads_etl.extractors.extract import (
-    _SamplingState,
     _attach_handlers,
     _build_author_request,
     _build_book_request,
@@ -18,6 +17,7 @@ from src.goodreads_etl.extractors.extract import (
     _build_record_from_book_page,
     _drive_crawl_to_completion,
     _require_book_id,
+    _SamplingState,
     _seed_initial_requests,
     run_sampling_crawl,
 )
@@ -166,9 +166,7 @@ def build_failed_context(*, label: str, book_id: str) -> MagicMock:
 
 
 BOOK_JSON_LD_HTML = '<script type="application/ld+json">{"@type": "Book", "name": "Dune"}</script>'
-BOOK_JSON_LD_WITH_AUTHOR_HTML = (
-    BOOK_JSON_LD_HTML + '<a href="/author/show/1">Frank Herbert</a>'
-)
+BOOK_JSON_LD_WITH_AUTHOR_HTML = BOOK_JSON_LD_HTML + '<a href="/author/show/1">Frank Herbert</a>'
 NO_JSON_LD_HTML = "<html><p>no ld+json here</p></html>"
 
 
@@ -314,8 +312,7 @@ class TestBuildRecordFromBookPage:
         """Verify `BookRecord` is constructed accurately when valid JSON-LD and page DOM are present."""
         settings = make_settings()
         soup = make_soup(
-            '<a href="/author/show/1">Frank Herbert</a>'
-            "<p>412 pages</p><p>1,000 reviews</p>"
+            '<a href="/author/show/1">Frank Herbert</a><p>412 pages</p><p>1,000 reviews</p>'
         )
         json_ld = {
             "name": "Dune",
@@ -340,7 +337,9 @@ class TestBuildRecordFromBookPage:
             {"name": "Dune", "aggregateRating": None},
         ],
     )
-    def test_missing_or_null_aggregate_rating_defaults_to_zero(self, json_ld: dict[str, Any]) -> None:
+    def test_missing_or_null_aggregate_rating_defaults_to_zero(
+        self, json_ld: dict[str, Any]
+    ) -> None:
         """Verify average rating gracefully falls back to 0.0 when missing or explicitly null in JSON-LD."""
         settings = make_settings()
         record, _ = _build_record_from_book_page(
@@ -395,7 +394,10 @@ class TestBuildCrawleeCrawler:
         self, max_concurrency: int | None
     ) -> None:
         """Verify crawler is instantiated without error across various concurrency config parameters."""
-        assert _build_crawlee_crawler(settings=make_settings(max_concurrency=max_concurrency)) is not None
+        assert (
+            _build_crawlee_crawler(settings=make_settings(max_concurrency=max_concurrency))
+            is not None
+        )
 
     @pytest.mark.parametrize("use_session_pool", [True, False])
     def test_builds_crawler_regardless_of_session_pool_setting(

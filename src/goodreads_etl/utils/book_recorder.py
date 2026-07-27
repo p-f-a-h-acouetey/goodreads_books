@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass
 
 import polars as pl
 
-
 BOOK_RECORD_SCHEMA: dict[str, type[pl.DataType]] = {
     "book_id": pl.Utf8,
     "url": pl.Utf8,
@@ -50,20 +49,34 @@ class BookRecord:
         title: Title of the book.
         first_author: Primary author's name.
         first_author_url: Full web URL to the primary author's Goodreads profile.
-        first_author_num_books: Total number of published works by the primary author. Defaults to 0.
-        first_author_num_followers: Total Goodreads follower count for the primary author. Defaults to 0.
-        average_rating: Overall average star rating (0.0 to 5.0). Defaults to 0.0.
-        num_reviews: Total user rating/review count. Defaults to 0.
-        num_pages: Page count of the specific edition. Defaults to 0.
-        num_currently_reading: Count of Goodreads users currently reading this book. Defaults to 0.
-        num_want_to_read: Count of Goodreads users who marked this book as want-to-read. Defaults to 0.
-        first_published: Date string of initial publication (e.g. 'October 1, 2020'). Defaults to None.
-        publisher: Name of the publishing company. Defaults to None.
-        language_code: ISO or standard language string (e.g. 'eng', 'en-US'). Defaults to None.
-        description: Full plain text book synopsis/blurb. Defaults to None.
-        genres: Delimited list or formatted string of associated genres. Defaults to None.
-        format: Publication format type (e.g. 'Hardcover', 'Paperback', 'Ebook'). Defaults to None.
-        series: Name of the literary series, if applicable. Defaults to None.
+        first_author_num_books: Total number of published works by the primary author.
+                            Defaults to 0.
+        first_author_num_followers: Total Goodreads follower count for the primary author.
+                                Defaults to 0.
+        average_rating: Overall average star rating (0.0 to 5.0).
+                    Defaults to 0.0.
+        num_reviews: Total user rating/review count.
+                    Defaults to 0.
+        num_pages: Page count of the specific edition.
+                Defaults to 0.
+        num_currently_reading: Count of Goodreads users currently reading this book.
+                            Defaults to 0.
+        num_want_to_read: Count of Goodreads users who marked this book as want-to-read.
+                        Defaults to 0.
+        first_published: Date string of initial publication (e.g. 'October 1, 2020').
+                        Defaults to None.
+        publisher: Name of the publishing company.
+                Defaults to None.
+        language_code: ISO or standard language string (e.g. 'eng', 'en-US').
+                    Defaults to None.
+        description: Full plain text book synopsis/blurb.
+                    Defaults to None.
+        genres: Delimited list or formatted string of associated genres.
+            Defaults to None.
+        format: Publication format type (e.g. 'Hardcover', 'Paperback', 'Ebook').
+            Defaults to None.
+        series: Name of the literary series, if applicable.
+            Defaults to None.
     """
 
     book_id: str

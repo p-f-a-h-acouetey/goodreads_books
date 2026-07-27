@@ -47,7 +47,6 @@ from src.goodreads_etl.utils.page_parser import (
 )
 from src.goodreads_etl.utils.text_parser import clean_object, get_float
 
-
 DEFAULT_RATING_VALUE_KEY = "ratingValue"
 DEFAULT_NAME_KEY = "name"
 DEFAULT_LANGUAGE_KEY = "inLanguage"
@@ -242,9 +241,7 @@ def _build_record_from_book_page(
     aggregate = json_ld.get(DEFAULT_AGGREGATE_RATING_KEY, {}) or {}
     html_text = str(soup)
 
-    num_currently_reading, num_want_to_read = extract_reading_stats(
-        soup=soup, html_text=html_text
-    )
+    num_currently_reading, num_want_to_read = extract_reading_stats(soup=soup, html_text=html_text)
     first_author, first_author_url = extract_first_author_and_url(soup=soup, json_ld=json_ld)
 
     record = BookRecord(
@@ -439,7 +436,9 @@ def _attach_handlers(
         """
         label = context.request.label
         book_id = _optional_book_id(request=context.request)
-        logger.warning("Request failed permanently label={} book_id={} error={}", label, book_id, error)
+        logger.warning(
+            "Request failed permanently label={} book_id={} error={}", label, book_id, error
+        )
 
         bs_context = cast(BeautifulSoupCrawlingContext, context)
 

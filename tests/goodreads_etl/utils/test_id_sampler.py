@@ -12,35 +12,47 @@ from src.goodreads_etl.utils.id_sampler import (
     generate_random_book_id,
 )
 
-
 # ---------------------------------------------------------------------------
 # _count_excluded_ids_in_range
 # ---------------------------------------------------------------------------
+
 
 class TestCountExcludedIdsInRange:
     """Tests for the `_count_excluded_ids_in_range` helper function."""
 
     def test_returns_zero_for_empty_set(self) -> None:
         """Verify that an empty exclusion set returns a count of zero."""
-        assert _count_excluded_ids_in_range(
-            excluded_book_ids=set(), min_book_id=1, max_book_id=100
-        ) == 0
+        assert (
+            _count_excluded_ids_in_range(excluded_book_ids=set(), min_book_id=1, max_book_id=100)
+            == 0
+        )
 
     def test_counts_only_in_range_numeric_ids(self) -> None:
         """Verify that non-digit strings, invalid numbers, and out-of-range IDs are ignored."""
         excluded = {
-            "1", "5", "10", "50", "100",  # inside range (incl. boundaries)
-            "abc", "12a", "", "1.5", "-5",  # not valid digit strings
-            "500", "999",  # outside range
+            "1",
+            "5",
+            "10",
+            "50",
+            "100",  # inside range (incl. boundaries)
+            "abc",
+            "12a",
+            "",
+            "1.5",
+            "-5",  # not valid digit strings
+            "500",
+            "999",  # outside range
         }
-        assert _count_excluded_ids_in_range(
-            excluded_book_ids=excluded, min_book_id=1, max_book_id=100
-        ) == 5
+        assert (
+            _count_excluded_ids_in_range(excluded_book_ids=excluded, min_book_id=1, max_book_id=100)
+            == 5
+        )
 
 
 # ---------------------------------------------------------------------------
 # _draw_unused_id
 # ---------------------------------------------------------------------------
+
 
 class TestDrawUnusedId:
     """Tests for the private `_draw_unused_id` rejection-sampling loop."""
@@ -76,6 +88,7 @@ class TestDrawUnusedId:
 # generate_random_book_id
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateRandomBookId:
     """Tests for the public `generate_random_book_id` entrypoint."""
 
@@ -87,8 +100,12 @@ class TestGenerateRandomBookId:
 
     def test_none_and_empty_excluded_set_behave_identically(self) -> None:
         """Verify passing None vs empty set for `excluded_book_ids` yields identical results."""
-        result_with_none = generate_random_book_id(min_book_id=5, max_book_id=5, excluded_book_ids=None)
-        result_with_empty = generate_random_book_id(min_book_id=5, max_book_id=5, excluded_book_ids=set())
+        result_with_none = generate_random_book_id(
+            min_book_id=5, max_book_id=5, excluded_book_ids=None
+        )
+        result_with_empty = generate_random_book_id(
+            min_book_id=5, max_book_id=5, excluded_book_ids=set()
+        )
         assert result_with_none == result_with_empty == "5"
 
     def test_excludes_provided_ids(self) -> None:
@@ -124,7 +141,9 @@ class TestGenerateRandomBookId:
 
     def test_delegates_to_draw_unused_id_with_correct_args(self) -> None:
         """Verify `generate_random_book_id` delegates parameter handling to `_draw_unused_id`."""
-        with patch("src.goodreads_etl.utils.id_sampler._draw_unused_id", return_value="7") as mock_draw:
+        with patch(
+            "src.goodreads_etl.utils.id_sampler._draw_unused_id", return_value="7"
+        ) as mock_draw:
             result = generate_random_book_id(
                 min_book_id=1, max_book_id=10, excluded_book_ids={"3"}, max_attempts=25
             )

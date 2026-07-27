@@ -5,10 +5,10 @@ No dependency on any other project module -- this is the lowest layer.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import html
 import re
 import unicodedata
+from collections.abc import Sequence
 
 DEFAULT_PARENTHETICAL_PATTERN = re.compile(r"\s*\([^()]*\)")
 DEFAULT_WHITESPACE_PATTERN = re.compile(r"\s+")

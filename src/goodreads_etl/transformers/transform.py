@@ -7,7 +7,11 @@ from typing import cast
 
 import polars as pl
 
-from src.goodreads_etl.utils.book_recorder import BOOK_RECORD_NUMERIC_COLUMNS, BOOK_RECORD_SCHEMA, BookRecord
+from src.goodreads_etl.utils.book_recorder import (
+    BOOK_RECORD_NUMERIC_COLUMNS,
+    BOOK_RECORD_SCHEMA,
+    BookRecord,
+)
 
 
 def _records_to_column_dict(

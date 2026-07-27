@@ -27,6 +27,7 @@ load_dotenv(override=True)
 # Authentication
 # ---------------------------------------------------------------------------
 
+
 def _resolve_hf_token(*, explicit_token: str | None) -> str | None:
     """Resolve a Hugging Face token.
 
@@ -61,6 +62,7 @@ def get_hf_api(*, hf_token: str | None = None) -> HfApi:
 # Repo setup
 # ---------------------------------------------------------------------------
 
+
 def ensure_repo_exists(*, api: HfApi, repo_id: str = SETTINGS.repo_id) -> None:
     """Create the target dataset repo if it does not already exist.
 
@@ -76,6 +78,7 @@ def ensure_repo_exists(*, api: HfApi, repo_id: str = SETTINGS.repo_id) -> None:
 # Checkpoint numbering and upload
 # ---------------------------------------------------------------------------
 
+
 def _extract_part_numbers(*, files: list[str], filename_template: str) -> list[int]:
     """Parse existing checkpoint filenames to find their part numbers.
 
@@ -88,9 +91,7 @@ def _extract_part_numbers(*, files: list[str], filename_template: str) -> list[i
     """
     pattern = re.escape(filename_template).replace(r"\{part\}", r"(\d+)")
     return [
-        int(match.group(1))
-        for file_name in files
-        if (match := re.match(f"^{pattern}$", file_name))
+        int(match.group(1)) for file_name in files if (match := re.match(f"^{pattern}$", file_name))
     ]
 
 
@@ -155,6 +156,7 @@ def push_checkpoint_to_hub(
 # Local scraped-ID tracker
 # ---------------------------------------------------------------------------
 
+
 def load_local_scraped_ids(*, settings: Settings = SETTINGS) -> set[str]:
     """Load already-scraped book IDs from the local tracker file.
 
@@ -200,6 +202,7 @@ def append_local_scraped_ids(*, book_ids: list[str], settings: Settings = SETTIN
 # Hub-hosted scraped-ID tracker
 # ---------------------------------------------------------------------------
 
+
 def _load_hub_scraped_ids(*, api: HfApi, settings: Settings = SETTINGS) -> set[str]:
     """Download the Hub-hosted scraped-ID file, if it exists.
 
@@ -223,7 +226,7 @@ def _load_hub_scraped_ids(*, api: HfApi, settings: Settings = SETTINGS) -> set[s
         logger.warning("Could not download Hub ID tracker: {}", exc)
         return set()
 
-    with open(path, "r", encoding=settings.encoding) as file:
+    with open(path, encoding=settings.encoding) as file:
         return {line.strip() for line in file if line.strip()}
 
 
@@ -254,5 +257,8 @@ def save_book_ids_to_hub(*, book_ids: list[str], api: HfApi, settings: Settings 
         )
 
     logger.info(
-        "Saved {} total book IDs to {}/{}", len(combined_ids), settings.repo_id, settings.book_ids_filename
+        "Saved {} total book IDs to {}/{}",
+        len(combined_ids),
+        settings.repo_id,
+        settings.book_ids_filename,
     )

@@ -137,9 +137,7 @@ class Settings:
     checkpoint_every: int = field(
         default_factory=partial(_read_env_int, name="CHECKPOINT_EVERY", default=1_000)
     )
-    min_book_id: int = field(
-        default_factory=partial(_read_env_int, name="MIN_BOOK_ID", default=1)
-    )
+    min_book_id: int = field(default_factory=partial(_read_env_int, name="MIN_BOOK_ID", default=1))
     # Goodreads book IDs currently top out well below 1e8; 60M is a safe
     # sampling ceiling that avoids wasting draws on IDs that never resolve.
     max_book_id: int = field(
@@ -155,9 +153,7 @@ class Settings:
     max_tasks_per_minute: int = field(
         default_factory=partial(_read_env_int, name="MAX_TASKS_PER_MINUTE", default=60)
     )
-    num_retries: int = field(
-        default_factory=partial(_read_env_int, name="NUM_RETRIES", default=3)
-    )
+    num_retries: int = field(default_factory=partial(_read_env_int, name="NUM_RETRIES", default=3))
     timeout_seconds: int = field(
         default_factory=partial(_read_env_int, name="TIMEOUT_SECONDS", default=30)
     )

@@ -58,9 +58,7 @@ class TestResolveHfToken:
         monkeypatch.setenv("HF_TOKEN", "from-env")
         assert _resolve_hf_token(explicit_token=None) == "from-env"
 
-    def test_returns_none_when_neither_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_none_when_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify None is returned when neither explicit token nor environment variable exists."""
         monkeypatch.delenv("HF_TOKEN", raising=False)
         assert _resolve_hf_token(explicit_token=None) is None
@@ -69,9 +67,7 @@ class TestResolveHfToken:
 class TestGetHfApi:
     """Tests evaluating HfApi client initialization and token binding."""
 
-    def test_builds_api_client_with_resolved_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_builds_api_client_with_resolved_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify HfApi client is instantiated with the environment token when unsupplied."""
         monkeypatch.delenv("HF_TOKEN", raising=False)
         monkeypatch.setenv("HF_TOKEN", "env-token")
@@ -126,24 +122,18 @@ class TestExtractPartNumbers:
     def test_extracts_matching_part_numbers(self) -> None:
         """Verify part integers are correctly parsed from filenames matching template."""
         files = ["books-part1.parquet", "books-part2.parquet", "other.txt"]
-        result = _extract_part_numbers(
-            files=files, filename_template="books-part{part}.parquet"
-        )
+        result = _extract_part_numbers(files=files, filename_template="books-part{part}.parquet")
         assert sorted(result) == [1, 2]
 
     def test_returns_empty_list_when_no_files_match(self) -> None:
         """Verify empty list is returned when filenames do not match expected template."""
         files = ["random.txt", "notes.md"]
-        result = _extract_part_numbers(
-            files=files, filename_template="books-part{part}.parquet"
-        )
+        result = _extract_part_numbers(files=files, filename_template="books-part{part}.parquet")
         assert result == []
 
     def test_returns_empty_list_for_empty_file_list(self) -> None:
         """Verify empty list is returned when provided file sequence is empty."""
-        result = _extract_part_numbers(
-            files=[], filename_template="books-part{part}.parquet"
-        )
+        result = _extract_part_numbers(files=[], filename_template="books-part{part}.parquet")
         assert result == []
 
 
@@ -206,9 +196,7 @@ class TestPushCheckpointToHub:
         dataframe = pl.DataFrame({"book_id": ["1", "2"]})
         settings = make_settings()
 
-        push_checkpoint_to_hub(
-            dataframe=dataframe, part_number=3, api=api, settings=settings
-        )
+        push_checkpoint_to_hub(dataframe=dataframe, part_number=3, api=api, settings=settings)
 
         api.upload_file.assert_called_once()
         call_kwargs = api.upload_file.call_args.kwargs
@@ -263,9 +251,7 @@ class TestLoadLocalScrapedIds:
 class TestAppendLocalScrapedIds:
     """Tests evaluating writing and appending scraped book IDs to local storage."""
 
-    def test_returns_none_and_writes_nothing_for_empty_list(
-        self, tmp_path: Path
-    ) -> None:
+    def test_returns_none_and_writes_nothing_for_empty_list(self, tmp_path: Path) -> None:
         """Verify early return with no disk write operations when ID list is empty."""
         file_path = tmp_path / "ids.txt"
         settings = make_settings(local_scraped_ids_path=str(file_path))
@@ -275,9 +261,7 @@ class TestAppendLocalScrapedIds:
         assert result is None
         assert not file_path.exists()
 
-    def test_creates_parent_directories_and_writes_ids(
-        self, tmp_path: Path
-    ) -> None:
+    def test_creates_parent_directories_and_writes_ids(self, tmp_path: Path) -> None:
         """Verify missing parent directories are created automatically before writing IDs."""
         file_path = tmp_path / "nested" / "ids.txt"
         settings = make_settings(local_scraped_ids_path=str(file_path))
@@ -286,9 +270,7 @@ class TestAppendLocalScrapedIds:
 
         assert file_path.read_text(encoding="utf-8") == "1\n2\n"
 
-    def test_appends_to_existing_file_without_overwriting(
-        self, tmp_path: Path
-    ) -> None:
+    def test_appends_to_existing_file_without_overwriting(self, tmp_path: Path) -> None:
         """Verify new IDs are appended to existing file content without overwriting."""
         file_path = tmp_path / "ids.txt"
         file_path.write_text("1\n", encoding="utf-8")
@@ -319,9 +301,7 @@ class TestAppendLocalScrapedIds:
 class TestLoadHubScrapedIds:
     """Tests evaluating retrieval of remote scraped ID records from Hugging Face Hub."""
 
-    def test_returns_empty_set_when_file_not_found_on_hub(
-        self, mocker: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_empty_set_when_file_not_found_on_hub(self, mocker: pytest.MonkeyPatch) -> None:
         """Verify empty set is returned when remote ID tracker file is missing on Hub."""
         mocker.patch(
             "src.goodreads_etl.loaders.load.hf_hub_download",
@@ -373,16 +353,12 @@ class TestSaveBookIdsToHub:
         )
         api = MagicMock()
 
-        result = save_book_ids_to_hub(
-            book_ids=[], api=api, settings=make_settings()
-        )
+        result = save_book_ids_to_hub(book_ids=[], api=api, settings=make_settings())
 
         assert result is None
         api.upload_file.assert_not_called()
 
-    def test_merges_new_ids_with_existing_and_uploads(
-        self, mocker: pytest.MonkeyPatch
-    ) -> None:
+    def test_merges_new_ids_with_existing_and_uploads(self, mocker: pytest.MonkeyPatch) -> None:
         """Verify new IDs are merged with existing remote records prior to Hub upload."""
         mocker.patch(
             "src.goodreads_etl.loaders.load._load_hub_scraped_ids",
@@ -422,9 +398,7 @@ class TestSaveBookIdsToHub:
         assert written_ids.count("1") == 1
         assert set(written_ids) == {"1", "2"}
 
-    def test_logs_info_after_successful_save(
-        self, mocker: pytest.MonkeyPatch
-    ) -> None:
+    def test_logs_info_after_successful_save(self, mocker: pytest.MonkeyPatch) -> None:
         """Verify informational message is logged following successful Hub ID upload."""
         mocker.patch(
             "src.goodreads_etl.loaders.load._load_hub_scraped_ids",

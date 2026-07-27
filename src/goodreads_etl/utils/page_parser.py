@@ -20,7 +20,6 @@ from bs4 import BeautifulSoup
 
 from src.goodreads_etl.utils.text_parser import clean_object, get_first_match, get_int
 
-
 # ---------------------------------------------------------------------------
 # Structured-data extraction (JSON-LD / Next.js hydration payload)
 # ---------------------------------------------------------------------------
@@ -276,7 +275,9 @@ DEFAULT_AUTHOR_KEY = "author"
 DEFAULT_NAME_KEY = "name"
 
 
-def _find_author_link(*, soup: BeautifulSoup, author_path_fragment: str, root_url: str) -> tuple[str, str] | None:
+def _find_author_link(
+    *, soup: BeautifulSoup, author_path_fragment: str, root_url: str
+) -> tuple[str, str] | None:
     """Return author name and absolute URL from the first matching anchor tag.
 
     Args:
@@ -573,9 +574,7 @@ def extract_first_published(
 
 DEFAULT_NEXT_DATA_PUBLISHER_KEYS = frozenset({"publisher", "publisherName", "imprint"})
 DEFAULT_PUBLISHER_KEY = "publisher"
-DEFAULT_PUBLISHER_PATTERNS = (
-    re.compile(r"publisher\s*[:|-]?\s*([^|•\n]+)", re.IGNORECASE),
-)
+DEFAULT_PUBLISHER_PATTERNS = (re.compile(r"publisher\s*[:|-]?\s*([^|•\n]+)", re.IGNORECASE),)
 
 
 def _publisher_from_next_data(*, next_data: dict | None, keys: frozenset[str]) -> str | None:
@@ -594,7 +593,9 @@ def _publisher_from_next_data(*, next_data: dict | None, keys: frozenset[str]) -
     return clean_object(value=name) if name else None
 
 
-def _publisher_from_json_ld(*, json_ld: dict | None, publisher_key: str, name_key: str) -> str | None:
+def _publisher_from_json_ld(
+    *, json_ld: dict | None, publisher_key: str, name_key: str
+) -> str | None:
     """Extract publisher string from JSON-LD schema block.
 
     Args:
@@ -615,7 +616,9 @@ def _publisher_from_json_ld(*, json_ld: dict | None, publisher_key: str, name_ke
     return None
 
 
-def _publisher_from_page_text(*, soup: BeautifulSoup, patterns: tuple[re.Pattern[str], ...]) -> str | None:
+def _publisher_from_page_text(
+    *, soup: BeautifulSoup, patterns: tuple[re.Pattern[str], ...]
+) -> str | None:
     """Extract publisher string from raw page text using fallback regexes.
 
     Args:
@@ -722,7 +725,9 @@ def extract_reading_stats(
     page_text = soup.get_text(" ", strip=True)
     sources = (html_text, page_text)
 
-    currently_reading = _search_sources_for_count(sources=sources, patterns=currently_reading_patterns)
+    currently_reading = _search_sources_for_count(
+        sources=sources, patterns=currently_reading_patterns
+    )
     want_to_read = _search_sources_for_count(sources=sources, patterns=want_to_read_patterns)
 
     return currently_reading, want_to_read
@@ -758,7 +763,5 @@ def extract_author_stats_from_author_page(
     """
     text = BeautifulSoup(html_text, html_parser).get_text(" ", strip=True)
     num_books = get_int(text=get_first_match(text=text, patterns=book_authors_patterns))
-    num_followers = get_int(
-        text=get_first_match(text=text, patterns=author_followers_patterns)
-    )
+    num_followers = get_int(text=get_first_match(text=text, patterns=author_followers_patterns))
     return num_books, num_followers

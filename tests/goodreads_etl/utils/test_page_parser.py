@@ -165,8 +165,7 @@ class TestExtractNextData:
     def test_multiple_scripts_only_matching_id_used(self) -> None:
         """Verify script search strictly targets `id="__NEXT_DATA__"`."""
         html_str = (
-            '<script id="OTHER">{"a": 1}</script>'
-            '<script id="__NEXT_DATA__">{"b": 2}</script>'
+            '<script id="OTHER">{"a": 1}</script><script id="__NEXT_DATA__">{"b": 2}</script>'
         )
         soup = make_soup(html_str)
         assert extract_next_data(soup=soup) == {"b": 2}
@@ -177,7 +176,10 @@ class TestFindFirstKey:
 
     def test_finds_key_in_flat_dict(self) -> None:
         """Verify key retrieval in single-level dictionary."""
-        assert find_first_key(data={"publisher": "Ace Books"}, keys=frozenset({"publisher"})) == "Ace Books"
+        assert (
+            find_first_key(data={"publisher": "Ace Books"}, keys=frozenset({"publisher"}))
+            == "Ace Books"
+        )
 
     def test_finds_key_nested_in_dict(self) -> None:
         """Verify key retrieval deeply nested inside dictionary hierarchy."""
@@ -282,8 +284,7 @@ class TestExtractFirstAuthorAndUrl:
     def test_skips_non_author_link_before_finding_author_link(self) -> None:
         """Verify non-author links are skipped until matching author URL pattern is found."""
         html_str = (
-            '<a href="/book/show/1">Not an author link</a>'
-            '<a href="/author/show/2">Real Author</a>'
+            '<a href="/book/show/1">Not an author link</a><a href="/author/show/2">Real Author</a>'
         )
         soup = make_soup(html_str)
         name, url = extract_first_author_and_url(soup=soup, json_ld=None)
@@ -420,10 +421,7 @@ class TestExtractSeries:
 
     def test_first_series_link_without_match_falls_to_second(self) -> None:
         """Verify iteration through multiple series links until pattern matches."""
-        html_str = (
-            '<a href="/series/1">No match here</a>'
-            '<a href="/series/2">Dune (Dune #1)</a>'
-        )
+        html_str = '<a href="/series/1">No match here</a><a href="/series/2">Dune (Dune #1)</a>'
         soup = make_soup(html_str)
         assert extract_series(soup=soup) == "dune"
 

@@ -151,7 +151,9 @@ def scrape_books(
             logger.error("Crawl batch returned zero records; stopping early.")
             break
 
-        batch_ids = _persist_batch(records=records, part_number=part_number, api=api, settings=settings)
+        batch_ids = _persist_batch(
+            records=records, part_number=part_number, api=api, settings=settings
+        )
 
         already_tried_book_ids.update(batch_ids)
         all_sampled_ids.extend(batch_ids)
@@ -166,4 +168,6 @@ def scrape_books(
         )
 
     save_book_ids_to_hub(book_ids=all_sampled_ids, api=api, settings=settings)
-    logger.info("Sampling complete: collected={} target={}", len(all_sampled_ids), settings.sample_size)
+    logger.info(
+        "Sampling complete: collected={} target={}", len(all_sampled_ids), settings.sample_size
+    )

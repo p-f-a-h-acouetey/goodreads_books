@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Dict, Set
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -63,7 +63,7 @@ def api() -> MagicMock:
 
 
 @pytest.fixture
-def scrape_mocks(mocker: pytest.MonkeyPatch, api: MagicMock) -> Dict[str, MagicMock]:
+def scrape_mocks(mocker: pytest.MonkeyPatch, api: MagicMock) -> dict[str, MagicMock]:
     """Patch common scrape_books dependencies and return handles for assertions.
 
     Args:
@@ -76,12 +76,8 @@ def scrape_mocks(mocker: pytest.MonkeyPatch, api: MagicMock) -> Dict[str, MagicM
     mocker.patch(f"{MODULE}.get_hf_api", return_value=api)
     return {
         "ensure_repo_exists": mocker.patch(f"{MODULE}.ensure_repo_exists"),
-        "load_resume_state": mocker.patch(
-            f"{MODULE}._load_resume_state", return_value=(set(), [])
-        ),
-        "get_next_part_number": mocker.patch(
-            f"{MODULE}.get_next_part_number", return_value=1
-        ),
+        "load_resume_state": mocker.patch(f"{MODULE}._load_resume_state", return_value=(set(), [])),
+        "get_next_part_number": mocker.patch(f"{MODULE}.get_next_part_number", return_value=1),
         "save_book_ids_to_hub": mocker.patch(f"{MODULE}.save_book_ids_to_hub"),
     }
 
@@ -94,9 +90,7 @@ def scrape_mocks(mocker: pytest.MonkeyPatch, api: MagicMock) -> Dict[str, MagicM
 class TestLoadResumeState:
     """Tests evaluating resume state initialization and tracker loading."""
 
-    def test_returns_empty_state_when_resume_is_false(
-        self, mocker: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_empty_state_when_resume_is_false(self, mocker: pytest.MonkeyPatch) -> None:
         """Verify an empty set and list are returned without disk reads when resume is disabled.
 
         Args:
@@ -161,9 +155,7 @@ class TestRunOneBatch:
         Args:
             mocker: Pytest monkeypatch/mocker fixture.
         """
-        crawl_mock = mocker.patch(
-            f"{MODULE}.run_sampling_crawl", return_value=[make_record()]
-        )
+        crawl_mock = mocker.patch(f"{MODULE}.run_sampling_crawl", return_value=[make_record()])
         settings = make_settings(min_book_id=5, max_book_id=50)
 
         result = await _run_one_batch(
@@ -210,9 +202,7 @@ class TestPersistBatch:
         records = [make_record(book_id="1"), make_record(book_id="2")]
         settings = make_settings()
 
-        result = _persist_batch(
-            records=records, part_number=7, api=api, settings=settings
-        )
+        result = _persist_batch(records=records, part_number=7, api=api, settings=settings)
 
         assert result == ["1", "2"]
 
@@ -222,9 +212,7 @@ class TestPersistBatch:
         assert push_kwargs["settings"] is settings
         assert push_kwargs["dataframe"].height == 2
 
-        self.append_mock.assert_called_once_with(
-            book_ids=["1", "2"], settings=settings
-        )
+        self.append_mock.assert_called_once_with(book_ids=["1", "2"], settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +226,7 @@ class TestScrapeBooks:
     def test_ensures_repo_exists_before_anything_else(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify target repository existence is validated before initiating pipeline execution.
@@ -259,7 +247,7 @@ class TestScrapeBooks:
     def test_skips_crawl_loop_when_resume_already_meets_target(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify crawl loop is skipped when resumed state already satisfies sample size target.
@@ -283,7 +271,7 @@ class TestScrapeBooks:
     def test_runs_single_batch_when_target_fits_in_one_checkpoint(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify single batch run completes pipeline when sample target fits within checkpoint limit.
@@ -295,14 +283,12 @@ class TestScrapeBooks:
         """
 
         async def fake_run_one_batch(
-            *, batch_size: int, already_tried_book_ids: Set[str], settings: Settings
+            *, batch_size: int, already_tried_book_ids: set[str], settings: Settings
         ) -> list[BookRecord]:
             return [make_record(book_id="1"), make_record(book_id="2")]
 
         mocker.patch(f"{MODULE}._run_one_batch", side_effect=fake_run_one_batch)
-        persist_mock = mocker.patch(
-            f"{MODULE}._persist_batch", return_value=["1", "2"]
-        )
+        persist_mock = mocker.patch(f"{MODULE}._persist_batch", return_value=["1", "2"])
         settings = make_settings(sample_size=2, checkpoint_every=1000)
 
         scrape_books(settings=settings)
@@ -315,7 +301,7 @@ class TestScrapeBooks:
     def test_runs_multiple_batches_until_target_reached(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify pipeline executes sequential batches with incrementing part numbers until target is met.
@@ -327,15 +313,13 @@ class TestScrapeBooks:
         """
 
         async def fake_run_one_batch(
-            *, batch_size: int, already_tried_book_ids: Set[str], settings: Settings
+            *, batch_size: int, already_tried_book_ids: set[str], settings: Settings
         ) -> list[BookRecord]:
             book_id = "1" if not already_tried_book_ids else "2"
             return [make_record(book_id=book_id)]
 
         mocker.patch(f"{MODULE}._run_one_batch", side_effect=fake_run_one_batch)
-        persist_mock = mocker.patch(
-            f"{MODULE}._persist_batch", side_effect=[["1"], ["2"]]
-        )
+        persist_mock = mocker.patch(f"{MODULE}._persist_batch", side_effect=[["1"], ["2"]])
         settings = make_settings(sample_size=2, checkpoint_every=1)
 
         scrape_books(settings=settings)
@@ -350,7 +334,7 @@ class TestScrapeBooks:
     def test_stops_early_and_logs_error_when_batch_returns_no_records(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify pipeline terminates early and logs an error when a batch yields no new records.
@@ -362,7 +346,7 @@ class TestScrapeBooks:
         """
 
         async def fake_run_one_batch(
-            *, batch_size: int, already_tried_book_ids: Set[str], settings: Settings
+            *, batch_size: int, already_tried_book_ids: set[str], settings: Settings
         ) -> list[BookRecord]:
             return []
 
@@ -382,7 +366,7 @@ class TestScrapeBooks:
     def test_batch_size_capped_by_checkpoint_every(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify batch size is correctly capped by the checkpoint_every configuration limit.
@@ -395,7 +379,7 @@ class TestScrapeBooks:
         captured_batch_sizes = []
 
         async def fake_run_one_batch(
-            *, batch_size: int, already_tried_book_ids: Set[str], settings: Settings
+            *, batch_size: int, already_tried_book_ids: set[str], settings: Settings
         ) -> list[BookRecord]:
             captured_batch_sizes.append(batch_size)
             return [make_record(book_id=str(len(captured_batch_sizes)))]
@@ -414,7 +398,7 @@ class TestScrapeBooks:
     def test_already_tried_book_ids_grow_across_batches(
         self,
         mocker: pytest.MonkeyPatch,
-        scrape_mocks: Dict[str, MagicMock],
+        scrape_mocks: dict[str, MagicMock],
         api: MagicMock,
     ) -> None:
         """Verify set of tried book IDs accumulates continuously across successive batches.
@@ -427,7 +411,7 @@ class TestScrapeBooks:
         captured_tried_ids = []
 
         async def fake_run_one_batch(
-            *, batch_size: int, already_tried_book_ids: Set[str], settings: Settings
+            *, batch_size: int, already_tried_book_ids: set[str], settings: Settings
         ) -> list[BookRecord]:
             captured_tried_ids.append(set(already_tried_book_ids))
             book_id = str(len(captured_tried_ids))
