@@ -353,7 +353,7 @@ class TestScrapeBooks:
         mocker.patch(f"{MODULE}._run_one_batch", side_effect=fake_run_one_batch)
         persist_mock = mocker.patch(f"{MODULE}._persist_batch")
         error_mock = mocker.patch(f"{MODULE}.logger.error")
-        settings = make_settings(sample_size=5, checkpoint_every=5)
+        settings = make_settings(sample_size=5, checkpoint_every=5, max_empty_batch_retries=5)
 
         scrape_books(settings=settings)
 
@@ -389,7 +389,7 @@ class TestScrapeBooks:
             f"{MODULE}._persist_batch",
             side_effect=lambda **kwargs: [r.book_id for r in kwargs["records"]],
         )
-        settings = make_settings(sample_size=5, checkpoint_every=2)
+        settings = make_settings(sample_size=5, checkpoint_every=2, max_empty_batch_retries=5)
 
         scrape_books(settings=settings)
 
@@ -422,7 +422,7 @@ class TestScrapeBooks:
             f"{MODULE}._persist_batch",
             side_effect=lambda **kwargs: [r.book_id for r in kwargs["records"]],
         )
-        settings = make_settings(sample_size=2, checkpoint_every=1)
+        settings = make_settings(sample_size=2, checkpoint_every=1, max_empty_batch_retries=5)
 
         scrape_books(settings=settings)
 

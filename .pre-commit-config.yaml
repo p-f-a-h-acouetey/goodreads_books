@@ -1,4 +1,4 @@
-# .pre-commit-config.yaml - AUTOMATIC CODE QUALITY FOR ANY PYTHON PROJECT
+# .pre-commit-config.yaml - AUTOMATIC CODE QUALITY
 # Runs before EVERY git commit
 repos:
 
@@ -13,16 +13,12 @@ repos:
       - id: ruff-format
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 2. MYPY - STATIC TYPE CHECKING (runs via uv, sees all real dependencies)
+  # 2. TY - STATIC TYPE CHECKING
   # ═══════════════════════════════════════════════════════════════════════════
-  - repo: local
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.49
     hooks:
-      - id: mypy
-        name: mypy
-        entry: uv run mypy src
-        language: system
-        pass_filenames: false
-        types: [python]
+      - id: ty
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 3. FILE CLEANLINESS

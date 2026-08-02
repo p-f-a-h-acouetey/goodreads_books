@@ -107,6 +107,11 @@ def scrape_books(
     transforms output to Polars DataFrames, pushes parquet checkpoints, updates
     local state tracking, and uploads the aggregated ID manifest upon completion.
 
+    A batch that returns zero records (e.g., transient queue exhaustion from
+    Crawlee finishing before an in-flight replacement enqueue lands) no longer
+    aborts the whole run. It is retried up to `MAX_EMPTY_BATCH_RETRIES` times
+    before the pipeline gives up and persists whatever was collected so far.
+
     This is the single public entrypoint for the whole pipeline.
 
     Args:
@@ -135,6 +140,7 @@ def scrape_books(
         return
 
     part_number = get_next_part_number(api=api, settings=settings)
+    empty_batch_retries = 0
 
     while remaining > 0:
         batch_size = min(settings.checkpoint_every, remaining)
@@ -148,8 +154,21 @@ def scrape_books(
         )
 
         if not records:
-            logger.error("Crawl batch returned zero records; stopping early.")
-            break
+            empty_batch_retries += 1
+            logger.warning(
+                "Batch returned zero records (attempt {}/{}); retrying.",
+                empty_batch_retries,
+                settings.max_empty_batch_retries,
+            )
+            if empty_batch_retries >= settings.max_empty_batch_retries:
+                logger.error(
+                    "Too many consecutive empty batches ({}); stopping and saving progress.",
+                    empty_batch_retries,
+                )
+                break
+            continue
+
+        empty_batch_retries = 0
 
         batch_ids = _persist_batch(
             records=records, part_number=part_number, api=api, settings=settings

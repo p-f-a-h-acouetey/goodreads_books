@@ -17,6 +17,7 @@ from src.goodreads_etl.extractors.extract import (
     _build_record_from_book_page,
     _drive_crawl_to_completion,
     _require_book_id,
+    _reset_request_queue_storage,
     _SamplingState,
     _seed_initial_requests,
     run_sampling_crawl,
@@ -421,8 +422,8 @@ class TestSeedInitialRequests:
         settings = make_settings(max_concurrency=2)
         state = make_state(sample_size=10, min_book_id=1, max_book_id=1000)
         requests = _seed_initial_requests(state=state, settings=settings)
-        assert len(requests) == 4
-        assert len(state.tried_book_ids) == 4
+        assert len(requests) == 8
+        assert len(state.tried_book_ids) == 8
 
     def test_seed_count_capped_by_sample_size(self) -> None:
         """Verify initial seed request count never exceeds the target total `sample_size`."""
@@ -434,7 +435,7 @@ class TestSeedInitialRequests:
         """Verify at least two seed requests are enqueued even if concurrency setting is zero."""
         settings = make_settings(max_concurrency=0)
         state = make_state(sample_size=5, min_book_id=1, max_book_id=1000)
-        assert len(_seed_initial_requests(state=state, settings=settings)) == 2
+        assert len(_seed_initial_requests(state=state, settings=settings)) == 4
 
     def test_returns_none_when_id_space_exhausted(self) -> None:
         """Verify returns None when candidate ID space is completely exhausted during initial seeding."""
@@ -625,13 +626,14 @@ class TestHandleAuthor:
         _attach_handlers(crawler=crawler, state=state, settings=settings)
 
         context = build_book_context(
-            book_id="1", html_str="<html><body><p>5 books, 100 followers</p></body></html>"
+            book_id="1",
+            html_str="<html><body><p>5 distinct works, followers (235,786)</p></body></html>",
         )
         handler = crawler.router._handlers_by_label[settings.label_author]
         await handler(context)
 
         assert record.first_author_num_books == 5
-        assert record.first_author_num_followers == 100
+        assert record.first_author_num_followers == 235_786
         assert state.successes == 1
 
     @pytest.mark.asyncio
@@ -834,12 +836,102 @@ class TestDriveCrawlToCompletion:
 
 
 # ---------------------------------------------------------------------------
+# _reset_request_queue_storage
+# ---------------------------------------------------------------------------
+
+
+class TestResetRequestQueueStorage:
+    """Tests evaluating the Crawlee request-queue storage reset helper."""
+
+    @pytest.mark.asyncio
+    async def test_opens_and_drops_default_request_queue(self, mocker: Any) -> None:
+        """Verify the helper opens the default queue and drops it exactly once."""
+        mock_queue = mocker.AsyncMock()
+        mock_open = mocker.patch(
+            "src.goodreads_etl.extractors.extract.RequestQueue.open",
+            new_callable=mocker.AsyncMock,
+            return_value=mock_queue,
+        )
+
+        await _reset_request_queue_storage()
+
+        mock_open.assert_awaited_once_with()
+        mock_queue.drop.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_propagates_exception_from_open(self, mocker: Any) -> None:
+        """Verify an exception raised while opening the queue propagates to the caller."""
+        mocker.patch(
+            "src.goodreads_etl.extractors.extract.RequestQueue.open",
+            new_callable=mocker.AsyncMock,
+            side_effect=RuntimeError("storage backend unavailable"),
+        )
+
+        with pytest.raises(RuntimeError, match="storage backend unavailable"):
+            await _reset_request_queue_storage()
+
+    @pytest.mark.asyncio
+    async def test_propagates_exception_from_drop(self, mocker: Any) -> None:
+        """Verify an exception raised while dropping the queue propagates to the caller."""
+        mock_queue = mocker.AsyncMock()
+        mock_queue.drop.side_effect = RuntimeError("drop failed")
+        mocker.patch(
+            "src.goodreads_etl.extractors.extract.RequestQueue.open",
+            new_callable=mocker.AsyncMock,
+            return_value=mock_queue,
+        )
+
+        with pytest.raises(RuntimeError, match="drop failed"):
+            await _reset_request_queue_storage()
+
+    @pytest.mark.asyncio
+    async def test_is_called_by_run_sampling_crawl(self, mocker: Any) -> None:
+        """Verify run_sampling_crawl invokes the reset helper before seeding requests."""
+        reset_mock = mocker.patch(
+            "src.goodreads_etl.extractors.extract._reset_request_queue_storage",
+            new_callable=mocker.AsyncMock,
+        )
+        mocker.patch(
+            "src.goodreads_etl.extractors.extract._seed_initial_requests",
+            return_value=None,
+        )
+
+        await run_sampling_crawl(
+            sample_size=5, min_book_id=1, max_book_id=100, settings=make_settings()
+        )
+
+        reset_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_not_called_when_sample_size_non_positive(self, mocker: Any) -> None:
+        """Verify the reset helper is skipped entirely for non-positive sample sizes."""
+        reset_mock = mocker.patch(
+            "src.goodreads_etl.extractors.extract._reset_request_queue_storage",
+            new_callable=mocker.AsyncMock,
+        )
+
+        await run_sampling_crawl(
+            sample_size=0, min_book_id=1, max_book_id=100, settings=make_settings()
+        )
+
+        reset_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # run_sampling_crawl -- top-level orchestration
 # ---------------------------------------------------------------------------
 
 
 class TestRunSamplingCrawl:
     """Tests evaluating entrypoint sampling orchestration logic."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_storage_reset(self, mocker: Any) -> None:
+        """Prevent real Crawlee file-system I/O from slowing down every test."""
+        mocker.patch(
+            "src.goodreads_etl.extractors.extract._reset_request_queue_storage",
+            new_callable=AsyncMock,
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("sample_size", [0, -1])

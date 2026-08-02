@@ -135,7 +135,7 @@ class Settings:
         default_factory=partial(_read_env_int, name="SAMPLE_SIZE", default=100_000)
     )
     checkpoint_every: int = field(
-        default_factory=partial(_read_env_int, name="CHECKPOINT_EVERY", default=1_000)
+        default_factory=partial(_read_env_int, name="CHECKPOINT_EVERY", default=2_000)
     )
     min_book_id: int = field(default_factory=partial(_read_env_int, name="MIN_BOOK_ID", default=1))
     # Goodreads book IDs currently top out well below 1e8; 60M is a safe
@@ -148,7 +148,7 @@ class Settings:
     )
 
     max_concurrency: int = field(
-        default_factory=partial(_read_env_int, name="MAX_CONCURRENCY", default=50)
+        default_factory=partial(_read_env_int, name="MAX_CONCURRENCY", default=100)
     )
     max_tasks_per_minute: int = field(
         default_factory=partial(_read_env_int, name="MAX_TASKS_PER_MINUTE", default=60)
@@ -173,6 +173,10 @@ class Settings:
     # it as a blocked-response trigger lets Crawlee rotate sessions instead
     # of burning through retries on a session that's already flagged.
     additional_http_error_status_codes: tuple[int, ...] = (429,)
+
+    max_empty_batch_retries: int = field(
+        default_factory=partial(_read_env_int, name="MAX_EMPTY_BATCH_RETRIES", default=200_000_000)
+    )
 
     label_book: str = "BOOK"
     label_author: str = "AUTHOR"

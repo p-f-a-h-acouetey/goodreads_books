@@ -468,7 +468,7 @@ class TestExtractFirstPublished:
 
     def test_prefers_page_text_first_published_phrase(self) -> None:
         """Verify preference for explicit 'First published ...' text phrase."""
-        soup = make_soup("<p>First published August 1, 1965</p>")
+        soup = make_soup("<p>First published August 1, 1965 @llc 2025/p>")
         assert extract_first_published(soup=soup, json_ld=None) == "august 1, 1965"
 
     def test_page_text_generic_published_phrase(self) -> None:
@@ -597,10 +597,10 @@ class TestExtractAuthorStatsFromAuthorPage:
 
     def test_extracts_book_and_follower_counts(self) -> None:
         """Verify extraction of total published books count and follower count."""
-        html_str = "<html><body><p>42 books, 10,000 followers</p></body></html>"
+        html_str = "<html><body><p>42 distinct works, followers (10,000)</p></body></html>"
         num_books, num_followers = extract_author_stats_from_author_page(html_text=html_str)
         assert num_books == 42
-        assert num_followers == 10000
+        assert num_followers == 10_000
 
     def test_returns_none_none_when_absent(self) -> None:
         """Verify (None, None) is returned when author profile metrics are missing."""
@@ -611,14 +611,14 @@ class TestExtractAuthorStatsFromAuthorPage:
 
     def test_only_books_present_followers_none(self) -> None:
         """Verify partial extraction when only book count metric exists on profile."""
-        html_str = "<html><body><p>15 books</p></body></html>"
+        html_str = "<html><body><p>15 distinct works</p></body></html>"
         num_books, num_followers = extract_author_stats_from_author_page(html_text=html_str)
         assert num_books == 15
         assert num_followers is None
 
     def test_only_followers_present_books_none(self) -> None:
         """Verify partial extraction when only follower count metric exists on profile."""
-        html_str = "<html><body><p>2,500 followers</p></body></html>"
+        html_str = "<html><body><p>followers (2,500)</p></body></html>"
         num_books, num_followers = extract_author_stats_from_author_page(html_text=html_str)
         assert num_books is None
-        assert num_followers == 2500
+        assert num_followers == 2_500

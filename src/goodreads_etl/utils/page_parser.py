@@ -528,8 +528,16 @@ def extract_num_reviews(
 
 DEFAULT_DATE_PUBLISHED_KEY = "datePublished"
 DEFAULT_PUBLISHED_PATTERNS = (
-    re.compile(r"first published\s+(.+?)(?:\s*[|•]|\s*$)", re.IGNORECASE),
-    re.compile(r"published\s+(.+?)(?:\s*[|•]|\s*$)", re.IGNORECASE),
+    re.compile(
+        r"first published\s+"
+        r"((?:[A-Za-z]+\s+\d{1,2},?\s+)?\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"published\s+"
+        r"((?:[A-Za-z]+\s+\d{1,2},?\s+)?\d{4})",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -737,8 +745,12 @@ def extract_reading_stats(
 # Author-page stats (works count, followers)
 # ---------------------------------------------------------------------------
 
-DEFAULT_BOOK_AUTHORS_PATTERNS = (re.compile(r"(\d[\d,]*)\s+books?", re.IGNORECASE),)
-DEFAULT_AUTHOR_FOLLOWERS_PATTERNS = (re.compile(r"(\d[\d,]*)\s+followers?", re.IGNORECASE),)
+DEFAULT_BOOK_AUTHORS_PATTERNS = (
+    re.compile(r"(\d[\d,]*)\s+(?:distinct\s+)?(?:books?|works?)", re.IGNORECASE),
+)
+DEFAULT_AUTHOR_FOLLOWERS_PATTERNS = (
+    re.compile(r"followers?\s*\(\s*(\d[\d,]*)\s*\)", re.IGNORECASE),
+)
 
 
 def extract_author_stats_from_author_page(

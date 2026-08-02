@@ -174,7 +174,7 @@ class TestSettingsDefaults:
 
     def test_default_checkpoint_every(self) -> None:
         """Verify default batch size threshold for pushing checkpoints."""
-        assert Settings().checkpoint_every == 1000
+        assert Settings().checkpoint_every == 2000
 
     def test_default_min_book_id(self) -> None:
         """Verify default minimum book ID boundary."""
@@ -190,7 +190,7 @@ class TestSettingsDefaults:
 
     def test_default_max_concurrency(self) -> None:
         """Verify default asynchronous concurrency limit."""
-        assert Settings().max_concurrency == 50
+        assert Settings().max_concurrency == 100
 
     def test_default_max_tasks_per_minute(self) -> None:
         """Verify default rate limiter constraint per minute."""

@@ -24,6 +24,7 @@ from crawlee.crawlers import (
     BeautifulSoupCrawlingContext,
 )
 from crawlee.sessions import SessionPool
+from crawlee.storages import RequestQueue
 from loguru import logger
 
 from src.goodreads_etl.utils.book_recorder import BookRecord
@@ -463,7 +464,7 @@ def _seed_initial_requests(*, state: _SamplingState, settings: Settings) -> list
         List of seed `Request` instances, or None if space exhaustion occurs.
     """
     seed_parallelism = settings.max_concurrency if settings.max_concurrency > 0 else 1
-    seed_count = min(max(seed_parallelism * 2, 1), state.sample_size)
+    seed_count = min(max(seed_parallelism * 4, 1), state.sample_size)
 
     try:
         return [
@@ -507,6 +508,19 @@ async def _drive_crawl_to_completion(
         pass
 
 
+async def _reset_request_queue_storage() -> None:
+    """Drop any request-queue state left over from a previous asyncio.run() loop.
+
+    Crawlee's file-system request queue client caches an asyncio.Lock bound
+    to whatever event loop was active when it was first created. Since each
+    pipeline batch runs its own asyncio.run() call, that lock can end up
+    bound to a dead event loop on retries; dropping the queue forces a fresh
+    client/lock on the next open().
+    """
+    queue = await RequestQueue.open()
+    await queue.drop()
+
+
 async def run_sampling_crawl(
     *,
     sample_size: int,
@@ -531,6 +545,9 @@ async def run_sampling_crawl(
     """
     if sample_size <= 0:
         return []
+
+    # Drop any request-queue state left over from a previous asyncio.run() loop
+    await _reset_request_queue_storage()
 
     state = _SamplingState(
         sample_size=sample_size,

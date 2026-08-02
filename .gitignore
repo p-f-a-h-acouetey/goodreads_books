@@ -30,6 +30,5 @@ data/
 # Coverage files
 .coverage
 
-# Formatting, linting
+# Formatting & linting
 .ruff_cache/
-.mypy_cache/
