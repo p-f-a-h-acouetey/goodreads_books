@@ -19,22 +19,22 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync --dev
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
-      - name: Mypy
-        run: uv run mypy src
+      - name: Type check with ty
+        run: uv run ty check src --output-format github
 
   test:
     needs: quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync --dev
       - name: Run pytest with coverage
         run: uv run pytest tests/goodreads_etl/ --cov=src/goodreads_etl/ --cov-report=term-missing
@@ -44,11 +44,11 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.1.0
 
       - name: Set up Python 3.12
         run: uv python pin 3.12
@@ -58,7 +58,7 @@ jobs:
 
       - name: Semantic Release
         id: release
-        uses: python-semantic-release/python-semantic-release@v10
+        uses: python-semantic-release/python-semantic-release@v10.6.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
