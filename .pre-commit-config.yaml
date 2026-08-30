@@ -1,39 +1,28 @@
-# .pre-commit-config.yaml - AUTOMATIC CODE QUALITY
-# Runs before EVERY git commit
 repos:
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 1. RUFF - LINTING + FORMATTING
-  # ═══════════════════════════════════════════════════════════════════════════
+  # Ruff: linting + formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.0
+    rev: v0.16.5
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 2. TY - STATIC TYPE CHECKING
-  # ═══════════════════════════════════════════════════════════════════════════
+  # ty: static type checking
   - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.49
+    rev: v0.0.75
     hooks:
       - id: ty
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 3. FILE CLEANLINESS
-  # ═══════════════════════════════════════════════════════════════════════════
+  # File cleanliness
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v6.0.0
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # 4. UV LOCK - REPRODUCIBLE DEPENDENCIES
-  # ═══════════════════════════════════════════════════════════════════════════
+  # uv lock: reproducible dependencies
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.26
+    rev: 0.12.7
     hooks:
       - id: uv-lock

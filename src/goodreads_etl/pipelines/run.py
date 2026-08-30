@@ -63,7 +63,9 @@ class BookRunner:
             return None
 
         remaining_target = sample_size - len(known_book_ids)
-        self.logger.info(f"{len(known_book_ids)} books already scraped, collecting {remaining_target} more")
+        self.logger.info(
+            f"{len(known_book_ids)} books already scraped, collecting {remaining_target} more"
+        )
 
         part_number = self.loader.get_next_part_number()
         tried_book_ids: set[str] = set(known_book_ids)
@@ -79,5 +81,7 @@ class BookRunner:
             all_batches.append(batch_df)
             part_number += 1
 
-        self.logger.info(f"Pipeline complete -- {len(known_book_ids)}/{sample_size} total books now in the dataset")
+        self.logger.info(
+            f"Pipeline complete -- {len(known_book_ids)}/{sample_size} total books now in the dataset"  # NOQA E501
+        )
         return None
