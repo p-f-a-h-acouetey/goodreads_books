@@ -6,41 +6,34 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.15.0",
-    "crawlee[beautifulsoup]>=1.8.2",
-    "fastparquet>=2026.5.0",
-    "huggingface-hub>=1.23.0",
-    "ipykernel>=7.3.0",
+    "crawlee[beautifulsoup]>=1.9.3",
+    "huggingface-hub>=1.28.0",
     "loguru>=0.7.3",
-    "lxml>=6.1.1",
-    "matplotlib>=3.11.0",
-    "polars>=1.42.1",
-    "python-dotenv>=1.2.2",
-    "scikit-learn>=1.9.0",
-    "scipy>=1.17.1",
-    "seaborn>=0.13.2",
-    "selenium>=4.45.0",
-    "webdriver-manager>=4.1.2",
+    "polars>=1.44.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [dependency-groups]
 dev = [
+    "deptry>=0.25.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
-    "ruff>=0.16.0",
-    "ty>=0.0.63",
+    "ruff>=0.16.4",
+    "ty>=0.0.74",
 ]
 
 [tool.pytest.ini_options]
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 branch = true
 source = ["src"]
 omit = [
-    "src/goodreads_etl/main.py",
+    "main.py",
 ]
 
 [tool.coverage.report]
@@ -61,10 +54,14 @@ fixable = ["ALL"]
 "tests/**/*.py" = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src/goodreads_etl"]
+known-first-party = [
+    "src/",
+    "tests/",
+    "notebooks/"
+]
 
 [tool.ty.environment]
 python-version = "3.12"
 
-[tool.ty.src]
-exclude = ["tests/**/*.py"]
+[tool.deptry]
+known_first_party = ["src"]

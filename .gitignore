@@ -17,7 +17,7 @@ wheels/
 *.parquet
 *.joblib
 
-# Data folders
+# Data & Crawlers folders
 storage/
 data/
 
@@ -29,6 +29,7 @@ data/
 
 # Coverage files
 .coverage
+htmlcov/
 
 # Formatting & linting
 .ruff_cache/
