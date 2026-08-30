@@ -1,60 +1,49 @@
-"""CLI entrypoint for the Goodreads book ETL pipeline."""
+"""Entry point: parses CLI args and triggers the pipeline via BookRunner.
+
+Lives at the src/goodreads_etl package root -- outside extractors/,
+loaders/, and pipelines/ -- since it is not itself an ETL stage, just the
+thing you invoke to run one.
+
+Usage:
+    python -m src.goodreads_etl.main --sample-size 500000
+"""
 
 from __future__ import annotations
 
 import argparse
-import os
+import asyncio
 import sys
 
 from loguru import logger
 
-from src.goodreads_etl.pipelines.run_pipeline import scrape_books
+from src.goodreads_etl.pipelines.run import DEFAULT_SAMPLE_SIZE, BookRunner
 
 
 def _parse_args() -> argparse.Namespace:
-    """Parse CLI flags for the scrape run.
+    """Parse command-line arguments for the pipeline run.
 
     Returns:
-        argparse.Namespace: Parsed command-line arguments containing:
-            - `hf_token` (str | None): Token for Hugging Face authentication.
-            - `log_level` (str): Logging severity level (e.g., "INFO", "DEBUG").
-            - `resume` (bool): Flag indicating whether to resume from local state.
+        Parsed arguments with sample_size.
     """
-    parser = argparse.ArgumentParser(
-        description="Goodreads Book ETL Pipeline (random sampling, HF Hub output)"
-    )
-    parser.add_argument("--hf-token", type=str, default=os.getenv("HF_TOKEN"))
-    parser.add_argument("--log-level", default="INFO")
+    parser = argparse.ArgumentParser(description="Run the Goodreads books ETL pipeline.")
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume from the local scraped-ID tracker instead of starting fresh.",
+        "--sample-size",
+        type=int,
+        default=DEFAULT_SAMPLE_SIZE,
+        help=f"Target total number of valid book records the dataset should hold (default: {DEFAULT_SAMPLE_SIZE}).",
     )
     return parser.parse_args()
 
 
-def _configure_logging(*, log_level: str) -> None:
-    """Reset and configure loguru sinks for CLI output.
-
-    Removes existing sinks and adds a stderr sink with color support,
-    asynchronous logging, and the specified severity filter level.
-
-    Args:
-        log_level: The minimum log level threshold to output (e.g., "INFO").
-    """
+async def _main() -> None:
+    """Parse args, run the pipeline once, log the final shape."""
     logger.remove()
-    logger.add(sys.stderr, level=log_level.upper(), colorize=True, enqueue=True)
+    logger.add(sys.stderr, level="INFO")
 
-
-def main() -> None:
-    """Parse CLI args, configure logging, and run the pipeline.
-
-    Serves as the main script entrypoint when executing the pipeline from the shell.
-    """
     args = _parse_args()
-    _configure_logging(log_level=args.log_level)
-    scrape_books(hf_token=args.hf_token, resume=args.resume)
+    runner = BookRunner()
+    await runner.run(args.sample_size)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(_main())

@@ -1,264 +1,172 @@
-"""LOAD stage: Hugging Face Hub I/O and scraped-book-ID bookkeeping.
+"""LOAD stage: batch, persist locally, and sink book records to the Hugging Face Hub.
 
-Exposes the public functions the pipeline needs: repo setup, checkpoint
-push, and ID tracking (local file + Hub-hosted file), consolidated into
-one module since they're all "where does the data end up" concerns.
+Owns everything needed to turn a list of finished book record dicts into
+checkpointed Parquet files on disk and on the Hub, plus the book_ids
+tracker used across runs to avoid re-scraping the same books.
+
+Exposes exactly one class, BookLoader, with these public methods:
+    - get_next_part_number()
+    - load_scraped_ids()
+    - load(records, filename, known_book_ids)
 """
 
 from __future__ import annotations
 
 import os
 import re
-import tempfile
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.utils import EntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 from loguru import logger
 
-from src.goodreads_etl.utils.config_setter import SETTINGS, Settings
+load_dotenv()
 
-load_dotenv(override=True)
+# --- Local staging output -----------------------------------------------------------
+OUTPUT_DIR = Path(".")
+PARQUET_FILENAME_TEMPLATE = "books-part{part}.parquet"
+PARQUET_FILENAME_PATTERN = re.compile(r"books-part(\d+)\.parquet$")
+PARQUET_BATCH_SIZE = 5_000
 
+# --- Hugging Face Hub sink -----------------------------------------------------------
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_REPO_ID = "pfaha/goodreads-books"
+HF_REPO_TYPE = "dataset"
+HF_RAW_DIR = "raw"
 
-# ---------------------------------------------------------------------------
-# Authentication
-# ---------------------------------------------------------------------------
-
-
-def _resolve_hf_token(*, explicit_token: str | None) -> str | None:
-    """Resolve a Hugging Face token.
-
-    Checks the explicitly passed token first, falling back to the `HF_TOKEN`
-    environment variable if non-existent or None.
-
-    Args:
-        explicit_token: An optional token string passed by the caller.
-
-    Returns:
-        The resolved token string, or None if no token is available.
-    """
-    return explicit_token or os.getenv("HF_TOKEN")
+# --- Scraped-IDs tracker -----------------------------------------------------------
+SCRAPED_IDS_FILENAME = "book_ids.parquet"
 
 
-def get_hf_api(*, hf_token: str | None = None) -> HfApi:
-    """Build an authenticated HfApi client.
+class BookLoader:
+    """Persists book batches locally, pushes them to the Hub, and tracks scraped IDs."""
 
-    Public: used by the pipeline to obtain one client shared across the whole run.
+    def __init__(self) -> None:
+        self.logger = logger.bind(component="BookLoader")
+        self.api = self._get_hf_api()
 
-    Args:
-        hf_token: Optional Hugging Face API token. Defaults to None (resolved
-            from environment).
+    def _get_hf_api(self) -> HfApi:
+        """Build an authenticated Hugging Face Hub API client.
 
-    Returns:
-        An authenticated `HfApi` instance.
-    """
-    return HfApi(token=_resolve_hf_token(explicit_token=hf_token))
+        Returns:
+            An HfApi instance authenticated with HF_TOKEN.
 
+        Raises:
+            RuntimeError: If HF_TOKEN is not set.
+        """
+        if not HF_TOKEN:
+            raise RuntimeError("HF_TOKEN is not set -- check your .env file")
+        return HfApi(token=HF_TOKEN)
 
-# ---------------------------------------------------------------------------
-# Repo setup
-# ---------------------------------------------------------------------------
+    def _save_locally(self, df: pl.DataFrame, filename: str) -> Path:
+        """Write a DataFrame to a local Parquet file under OUTPUT_DIR.
 
+        Args:
+            df: The DataFrame to persist.
+            filename: File name only (e.g. "books-part7.parquet").
 
-def ensure_repo_exists(*, api: HfApi, repo_id: str = SETTINGS.repo_id) -> None:
-    """Create the target dataset repo if it does not already exist.
+        Returns:
+            The full local path the file was written to.
+        """
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        local_path = OUTPUT_DIR / filename
+        df.write_parquet(local_path)
+        return local_path
 
-    Args:
-        api: An authenticated `HfApi` client instance.
-        repo_id: The target Hugging Face repository ID (e.g., "org/dataset-name").
-            Defaults to `SETTINGS.repo_id`.
-    """
-    api.create_repo(repo_id=repo_id, repo_type="dataset", private=False, exist_ok=True)
+    def _upload(self, local_path: Path, filename: str, commit_message: str) -> None:
+        """Upload a local file to {HF_REPO_ID}/{HF_RAW_DIR}/{filename}.
 
-
-# ---------------------------------------------------------------------------
-# Checkpoint numbering and upload
-# ---------------------------------------------------------------------------
-
-
-def _extract_part_numbers(*, files: list[str], filename_template: str) -> list[int]:
-    """Parse existing checkpoint filenames to find their part numbers.
-
-    Args:
-        files: List of file names retrieved from the repository.
-        filename_template: Template pattern string containing `{part}`.
-
-    Returns:
-        A list of integer part numbers extracted from matching filenames.
-    """
-    pattern = re.escape(filename_template).replace(r"\{part\}", r"(\d+)")
-    return [
-        int(match.group(1)) for file_name in files if (match := re.match(f"^{pattern}$", file_name))
-    ]
-
-
-def get_next_part_number(*, api: HfApi, settings: Settings = SETTINGS) -> int:
-    """Determine the next checkpoint part number from existing repo files.
-
-    Args:
-        api: An authenticated `HfApi` client instance.
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
-
-    Returns:
-        The next integer part number (starts at 1 if no files exist).
-    """
-    try:
-        files = api.list_repo_files(repo_id=settings.repo_id, repo_type="dataset")
-    except Exception as exc:
-        logger.warning("Could not list repo files, defaulting to part 1: {}", exc)
-        return 1
-
-    part_numbers = _extract_part_numbers(
-        files=files, filename_template=settings.checkpoint_filename_template
-    )
-    return max(part_numbers, default=0) + 1
-
-
-def push_checkpoint_to_hub(
-    *,
-    dataframe: pl.DataFrame,
-    part_number: int,
-    api: HfApi,
-    settings: Settings = SETTINGS,
-) -> None:
-    """Serialize a DataFrame to Parquet and upload it as one checkpoint file.
-
-    Args:
-        dataframe: The Polars DataFrame to push. No action taken if empty.
-        part_number: The incremental part number to substitute into the template.
-        api: An authenticated `HfApi` client instance.
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
-    """
-    if dataframe.is_empty():
-        return
-
-    filename = settings.checkpoint_filename_template.format(part=part_number)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir) / filename
-        dataframe.write_parquet(tmp_path)
-
-        api.upload_file(
-            path_or_fileobj=str(tmp_path),
-            path_in_repo=filename,
-            repo_id=settings.repo_id,
-            repo_type="dataset",
-            commit_message=f"Add {filename} ({dataframe.height} books)",
+        Args:
+            local_path: Local path of the file to upload.
+            filename: File name only, used to build the path in the repo.
+            commit_message: Commit message for this upload.
+        """
+        self.api.upload_file(
+            path_or_fileobj=str(local_path),
+            path_in_repo=f"{HF_RAW_DIR}/{filename}",
+            repo_id=HF_REPO_ID,
+            repo_type=HF_REPO_TYPE,
+            commit_message=commit_message,
         )
 
-    logger.info("Pushed {} books to {}/{}", dataframe.height, settings.repo_id, filename)
+    def get_next_part_number(self) -> int:
+        """Determine the next books-part number to use, continuing from the Hub.
 
+        Returns:
+            1 if no books-part*.parquet files exist yet, otherwise the
+            highest existing part number + 1.
+        """
+        existing_files = self.api.list_repo_files(repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE)
+        part_numbers = [
+            int(match.group(1))
+            for f in existing_files
+            if (match := PARQUET_FILENAME_PATTERN.search(f)) and f.startswith(f"{HF_RAW_DIR}/")
+        ]
+        next_part = max(part_numbers, default=0) + 1
+        self.logger.info(f"Next part number: {next_part} ({len(part_numbers)} existing part(s) found)")
+        return next_part
 
-# ---------------------------------------------------------------------------
-# Local scraped-ID tracker
-# ---------------------------------------------------------------------------
+    def load_scraped_ids(self) -> set[str]:
+        """Load the set of book_ids already scraped in any previous run.
 
+        Returns:
+            Set of book_id strings already present in the tracker file, or
+            an empty set if the tracker does not exist yet.
+        """
+        try:
+            local_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                repo_type=HF_REPO_TYPE,
+                filename=f"{HF_RAW_DIR}/{SCRAPED_IDS_FILENAME}",
+                token=HF_TOKEN,
+            )
+        except (EntryNotFoundError, RepositoryNotFoundError):
+            self.logger.info("No book_ids tracker found on the Hub yet, starting fresh")
+            return set()
 
-def load_local_scraped_ids(*, settings: Settings = SETTINGS) -> set[str]:
-    """Load already-scraped book IDs from the local tracker file.
+        scraped_ids = set(pl.read_parquet(local_path).get_column("book_id").to_list())
+        self.logger.info(f"Loaded {len(scraped_ids)} already-scraped book_id(s) from the tracker")
+        return scraped_ids
 
-    Args:
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
+    def _update_scraped_ids(self, new_book_ids: list[str], known_book_ids: set[str]) -> set[str]:
+        """Merge new book_ids into the tracker, save locally, and push to the Hub.
 
-    Returns:
-        A set of string book IDs previously recorded in the local tracking file.
-    """
-    file_path = Path(settings.local_scraped_ids_path)
-    if not file_path.exists():
-        return set()
+        Args:
+            new_book_ids: book_ids collected in the batch just loaded.
+            known_book_ids: Full set of book_ids already known before this batch.
 
-    with file_path.open("r", encoding=settings.encoding) as file:
-        return {line.strip() for line in file if line.strip()}
+        Returns:
+            The updated, merged set of all known book_ids.
+        """
+        updated_ids = known_book_ids | set(new_book_ids)
+        df = pl.DataFrame({"book_id": sorted(updated_ids)})
+        local_path = self._save_locally(df, SCRAPED_IDS_FILENAME)
+        self._upload(local_path, SCRAPED_IDS_FILENAME, f"Update book_ids tracker ({len(updated_ids)} total)")
+        return updated_ids
 
+    def load(self, records: list[dict[str, Any]], filename: str, known_book_ids: set[str]) -> tuple[pl.DataFrame, set[str]]:
+        """Batch records into a DataFrame, save and push it, then update the scraped-ids tracker.
 
-def append_local_scraped_ids(*, book_ids: list[str], settings: Settings = SETTINGS) -> None:
-    """Append newly scraped book IDs to the local tracker file.
+        Args:
+            records: List of final book record dicts to persist.
+            filename: File name only for the data batch (e.g. "books-part7.parquet").
+            known_book_ids: Full set of book_ids already known before this batch.
 
-    Called right after each successful checkpoint push, so a crash
-    mid-run never loses progress that already made it to the Hub.
+        Returns:
+            Tuple of (the DataFrame written and uploaded, the updated set
+            of all known book_ids including this batch).
+        """
+        df = pl.DataFrame(records)
+        local_path = self._save_locally(df, filename)
 
-    Args:
-        book_ids: List of newly processed book ID strings to record.
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
-    """
-    if not book_ids:
-        return
+        self.logger.info(f"Sinking {HF_RAW_DIR}/{filename}: uploading {df.height} row(s)...")
+        self._upload(local_path, filename, f"Add {filename} ({df.height} books)")
+        self.logger.info(f"Sunk {HF_RAW_DIR}/{filename}: {df.height} row(s) pushed to {HF_REPO_ID}")
 
-    file_path = Path(settings.local_scraped_ids_path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+        updated_ids = self._update_scraped_ids(df.get_column("book_id").to_list(), known_book_ids)
+        self.logger.info(f"Tracker updated: {len(updated_ids)} book_id(s) now recorded")
 
-    with file_path.open("a", encoding=settings.encoding) as file:
-        file.writelines(f"{book_id}\n" for book_id in book_ids)
-
-    logger.info(
-        "Appended {} book IDs to local tracker {}", len(book_ids), settings.local_scraped_ids_path
-    )
-
-
-# ---------------------------------------------------------------------------
-# Hub-hosted scraped-ID tracker
-# ---------------------------------------------------------------------------
-
-
-def _load_hub_scraped_ids(*, api: HfApi, settings: Settings = SETTINGS) -> set[str]:
-    """Download the Hub-hosted scraped-ID file, if it exists.
-
-    Args:
-        api: An authenticated `HfApi` client instance.
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
-
-    Returns:
-        A set of string book IDs stored in the remote Hugging Face repository tracker.
-    """
-    try:
-        path = hf_hub_download(
-            repo_id=settings.repo_id,
-            filename=settings.book_ids_filename,
-            repo_type="dataset",
-            token=api.token,
-        )
-    except EntryNotFoundError:
-        return set()
-    except Exception as exc:
-        logger.warning("Could not download Hub ID tracker: {}", exc)
-        return set()
-
-    with open(path, encoding=settings.encoding) as file:
-        return {line.strip() for line in file if line.strip()}
-
-
-def save_book_ids_to_hub(*, book_ids: list[str], api: HfApi, settings: Settings = SETTINGS) -> None:
-    """Merge new IDs with existing Hub IDs, then upload the combined list.
-
-    Args:
-        book_ids: List of new book ID strings to merge with existing remote IDs.
-        api: An authenticated `HfApi` client instance.
-        settings: Pipeline configuration settings. Defaults to `SETTINGS`.
-    """
-    if not book_ids:
-        return
-
-    existing_ids = _load_hub_scraped_ids(api=api, settings=settings)
-    combined_ids = list(dict.fromkeys([*existing_ids, *book_ids]))
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir) / settings.book_ids_filename
-        tmp_path.write_text("\n".join(combined_ids), encoding=settings.encoding)
-
-        api.upload_file(
-            path_or_fileobj=str(tmp_path),
-            path_in_repo=settings.book_ids_filename,
-            repo_id=settings.repo_id,
-            repo_type="dataset",
-            commit_message=f"Update {settings.book_ids_filename} with {len(book_ids)} new IDs",
-        )
-
-    logger.info(
-        "Saved {} total book IDs to {}/{}",
-        len(combined_ids),
-        settings.repo_id,
-        settings.book_ids_filename,
-    )
+        return df, updated_ids
