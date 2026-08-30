@@ -106,7 +106,9 @@ class BookLoader:
             if (match := PARQUET_FILENAME_PATTERN.search(f)) and f.startswith(f"{HF_RAW_DIR}/")
         ]
         next_part = max(part_numbers, default=0) + 1
-        self.logger.info(f"Next part number: {next_part} ({len(part_numbers)} existing part(s) found)")
+        self.logger.info(
+            f"Next part number: {next_part} ({len(part_numbers)} existing part(s) found)"
+        )
         return next_part
 
     def load_scraped_ids(self) -> set[str]:
@@ -144,10 +146,14 @@ class BookLoader:
         updated_ids = known_book_ids | set(new_book_ids)
         df = pl.DataFrame({"book_id": sorted(updated_ids)})
         local_path = self._save_locally(df, SCRAPED_IDS_FILENAME)
-        self._upload(local_path, SCRAPED_IDS_FILENAME, f"Update book_ids tracker ({len(updated_ids)} total)")
+        self._upload(
+            local_path, SCRAPED_IDS_FILENAME, f"Update book_ids tracker ({len(updated_ids)} total)"
+        )
         return updated_ids
 
-    def load(self, records: list[dict[str, Any]], filename: str, known_book_ids: set[str]) -> tuple[pl.DataFrame, set[str]]:
+    def load(
+        self, records: list[dict[str, Any]], filename: str, known_book_ids: set[str]
+    ) -> tuple[pl.DataFrame, set[str]]:
         """Batch records into a DataFrame, save and push it, then update the scraped-ids tracker.
 
         Args:

@@ -20,18 +20,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from loguru import logger
 from bs4 import BeautifulSoup
 from crawlee import Request
+from loguru import logger
 
 import src.goodreads_etl.extractors.extract as extract_module
-from src.goodreads_etl.extractors.extract import BookExtractor, EDITIONS_URL_TEMPLATE, BASE_BOOK_URL
+from src.goodreads_etl.extractors.extract import BASE_BOOK_URL, EDITIONS_URL_TEMPLATE, BookExtractor
 
 _RAISES = object()
 
@@ -83,8 +83,14 @@ def _build_book_html(
             "legacyId": 999,
             "stats": {"averageRating": 4.2, "ratingsCount": 1000, "textReviewsCount": 50},
         }
-    apollo_state[contributor_key] = {"name": "Jane Author", "webUrl": "https://goodreads.com/author/1"}
-    apollo_state[contributor2_key] = {"name": "John Editor", "webUrl": "https://goodreads.com/author/2"}
+    apollo_state[contributor_key] = {
+        "name": "Jane Author",
+        "webUrl": "https://goodreads.com/author/1",
+    }
+    apollo_state[contributor2_key] = {
+        "name": "John Editor",
+        "webUrl": "https://goodreads.com/author/2",
+    }
 
     next_data = {"props": {"pageProps": {"apolloState": apollo_state}}}
     return f'<html><body><script id="__NEXT_DATA__">{json.dumps(next_data)}</script>{body_text}</body></html>'
@@ -130,7 +136,10 @@ class TestMsEpochToIso:
         [
             (None, None),  # falsy input
             (0, None),  # falsy input
-            (int(datetime(2023, 11, 14, tzinfo=timezone.utc).timestamp() * 1000), "2023-11-14"),  # normal post-1970 date
+            (
+                int(datetime(2023, 11, 14, tzinfo=UTC).timestamp() * 1000),
+                "2023-11-14",
+            ),  # normal post-1970 date
             (-3471292800000, "1860-01-01"),  # pre-1970 regression: Windows OSError case
         ],
     )
@@ -260,13 +269,23 @@ class TestExtractAllContributors:
         "book, expected",
         [
             (
-                {"primaryContributorEdge": {"role": "Author", "node": {"name": "Solo Author", "webUrl": "u1"}}},
+                {
+                    "primaryContributorEdge": {
+                        "role": "Author",
+                        "node": {"name": "Solo Author", "webUrl": "u1"},
+                    }
+                },
                 [{"name": "Solo Author", "url": "u1", "role": "Author"}],
             ),
             (
                 {
-                    "primaryContributorEdge": {"role": "Author", "node": {"name": "Main", "webUrl": "u1"}},
-                    "secondaryContributorEdges": [{"role": "Illustrator", "node": {"name": "Artist", "webUrl": "u2"}}],
+                    "primaryContributorEdge": {
+                        "role": "Author",
+                        "node": {"name": "Main", "webUrl": "u1"},
+                    },
+                    "secondaryContributorEdges": [
+                        {"role": "Illustrator", "node": {"name": "Artist", "webUrl": "u2"}}
+                    ],
                 },
                 [
                     {"name": "Main", "url": "u1", "role": "Author"},
@@ -279,7 +298,14 @@ class TestExtractAllContributors:
             ),
             ({"secondaryContributorEdges": [{"node": {"webUrl": "u"}}]}, []),
             (
-                {"secondaryContributorEdges": [None, "not a dict", 42, {"role": "Illustrator", "node": {"name": "Real", "webUrl": "u"}}]},
+                {
+                    "secondaryContributorEdges": [
+                        None,
+                        "not a dict",
+                        42,
+                        {"role": "Illustrator", "node": {"name": "Real", "webUrl": "u"}},
+                    ]
+                },
                 [{"name": "Real", "url": "u", "role": "Illustrator"}],
             ),
             ({}, []),
@@ -451,7 +477,12 @@ class TestStartRecord:
 
     def test_strips_internal_only_fields(self, extractor):
         """is_nonexistent, first_author_url, and editions_url should not leak into the record."""
-        book_data = {"is_nonexistent": False, "first_author_url": "u", "editions_url": "e", "title": "X"}
+        book_data = {
+            "is_nonexistent": False,
+            "first_author_url": "u",
+            "editions_url": "e",
+            "title": "X",
+        }
         record = extractor._start_record("123", book_data)
         assert "is_nonexistent" not in record
         assert "first_author_url" not in record
@@ -486,9 +517,22 @@ class TestAssembleRecord:
     @pytest.mark.parametrize(
         "record, expected_is_part_of_series",
         [
-            ({"_awaiting_author": False, "_awaiting_editions": False, "title": "X", "series": []}, False),
             (
-                {"_awaiting_author": False, "_awaiting_editions": False, "title": "Y", "series": [{"name": "S", "position": "1"}]},
+                {
+                    "_awaiting_author": False,
+                    "_awaiting_editions": False,
+                    "title": "X",
+                    "series": [],
+                },
+                False,
+            ),
+            (
+                {
+                    "_awaiting_author": False,
+                    "_awaiting_editions": False,
+                    "title": "Y",
+                    "series": [{"name": "S", "position": "1"}],
+                },
                 True,
             ),
         ],
@@ -726,9 +770,13 @@ class TestEnqueueReplacement:
     @pytest.fixture
     def nonexistent_book(self, extractor, monkeypatch):
         """Make handle_book always take its nonexistent-book path."""
-        monkeypatch.setattr(extractor, "_parse_book_page", lambda soup, book_id: {"is_nonexistent": True})
+        monkeypatch.setattr(
+            extractor, "_parse_book_page", lambda soup, book_id: {"is_nonexistent": True}
+        )
 
-    async def test_returns_none_when_complete(self, progress, handle_book, nonexistent_book, monkeypatch):
+    async def test_returns_none_when_complete(
+        self, progress, handle_book, nonexistent_book, monkeypatch
+    ):
         """If progress is complete, _enqueue_replacement should return at its first line --
         next_random_book_id must never be called, and no request should be enqueued.
         """
@@ -738,20 +786,28 @@ class TestEnqueueReplacement:
         next_id = MagicMock()
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: next_id())
 
-        context = _context(Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "2"}))
+        context = _context(
+            Request.from_url(
+                "http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "2"}
+            )
+        )
         result = await handle_book(context)
 
         assert result is None
         next_id.assert_not_called()
         context.add_requests.assert_not_awaited()
 
-    async def test_returns_none_when_no_id_is_available(self, handle_book, nonexistent_book, monkeypatch):
+    async def test_returns_none_when_no_id_is_available(
+        self, handle_book, nonexistent_book, monkeypatch
+    ):
         """If no untried ID exists, _enqueue_replacement should log a warning and skip enqueuing."""
         next_id = MagicMock(return_value=None)
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: next_id())
 
         context = _context(
-            Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"}
+            )
         )
 
         messages = []
@@ -766,19 +822,25 @@ class TestEnqueueReplacement:
         context.add_requests.assert_not_awaited()
         assert any("No untried book ID found" in m for m in messages)
 
-    async def test_returns_none_after_enqueuing_replacement(self, extractor, handle_book, nonexistent_book, monkeypatch):
+    async def test_returns_none_after_enqueuing_replacement(
+        self, extractor, handle_book, nonexistent_book, monkeypatch
+    ):
         """If an ID is available, _enqueue_replacement should build and enqueue exactly one
         book request for that ID, then return None.
         """
         next_id = MagicMock(return_value="999")
         build_request = MagicMock(
-            return_value=Request.from_url("http://x/book/999", label=extract_module.LABEL_BOOK, user_data={"book_id": "999"})
+            return_value=Request.from_url(
+                "http://x/book/999", label=extract_module.LABEL_BOOK, user_data={"book_id": "999"}
+            )
         )
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: next_id())
         monkeypatch.setattr(extractor, "_build_book_request", build_request)
 
         context = _context(
-            Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"}
+            )
         )
 
         result = await handle_book(context)
@@ -804,9 +866,11 @@ class TestEnqueueReplacement:
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: next_id())
 
         context = _context(
-            Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://x", label=extract_module.LABEL_BOOK, user_data={"book_id": "123"}
+            )
         )
-        result = await handle_failed(context, Exception("boom")) # type: ignore
+        result = await handle_failed(context, Exception("boom"))  # type: ignore
 
         assert result is None
         next_id.assert_not_called()
@@ -828,7 +892,9 @@ class TestTryFinalize:
         extractor._attach_handlers(crawler, progress)
         return crawler.router.handlers[extract_module.LABEL_EDITIONS]
 
-    async def test_returns_none_when_no_pending_record(self, extractor, progress, handle_editions, monkeypatch):
+    async def test_returns_none_when_no_pending_record(
+        self, extractor, progress, handle_editions, monkeypatch
+    ):
         """If record is None, _try_finalize should return immediately -- no assembly, no
         add_record, no logging, and no enqueue attempt.
         """
@@ -838,7 +904,9 @@ class TestTryFinalize:
         # Deliberately no progress.pending["123"] entry.
 
         context = _context(
-            Request.from_url("http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
         )
         result = await handle_editions(context)
 
@@ -847,7 +915,9 @@ class TestTryFinalize:
         assert progress.records == []
         context.add_requests.assert_not_awaited()
 
-    async def test_returns_none_when_not_ready_to_assemble(self, extractor, progress, handle_editions, monkeypatch):
+    async def test_returns_none_when_not_ready_to_assemble(
+        self, extractor, progress, handle_editions, monkeypatch
+    ):
         """If the record still has an outstanding enrichment flag, _try_finalize should return
         without popping it from pending or assembling it.
         """
@@ -861,7 +931,9 @@ class TestTryFinalize:
         monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 5)
 
         context = _context(
-            Request.from_url("http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
         )
         result = await handle_editions(context)
 
@@ -871,17 +943,25 @@ class TestTryFinalize:
         assert progress.records == []
         context.add_requests.assert_not_awaited()
 
-    async def test_returns_none_when_add_record_rejects(self, extractor, progress, handle_editions, monkeypatch):
+    async def test_returns_none_when_add_record_rejects(
+        self, extractor, progress, handle_editions, monkeypatch
+    ):
         """If add_record() returns False (run already complete via a different concurrent book),
         _try_finalize should return without logging success or enqueuing a replacement -- even
         though the record was already popped and assembled.
         """
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": True}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
         monkeypatch.setattr(BookExtractor._Progress, "add_record", lambda self, record: False)
         monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 5)
 
         context = _context(
-            Request.from_url("http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
         )
 
         messages = []
@@ -906,11 +986,17 @@ class TestTryFinalize:
         extractor._attach_handlers(crawler, progress)
         handle_editions = crawler.router.handlers[extract_module.LABEL_EDITIONS]
 
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": True}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
         monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 5)
 
         context = _context(
-            Request.from_url("http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
         )
 
         messages = []
@@ -926,16 +1012,24 @@ class TestTryFinalize:
         assert any("book_id=123" in m and "1/1" in m for m in messages)
         context.add_requests.assert_not_awaited()
 
-    async def test_incomplete_run_triggers_replacement(self, extractor, progress, handle_editions, monkeypatch):
+    async def test_incomplete_run_triggers_replacement(
+        self, extractor, progress, handle_editions, monkeypatch
+    ):
         """If the run is NOT yet complete after this record, _try_finalize should both log
         success and enqueue a replacement via _enqueue_replacement.
         """
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": True}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
         monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 5)
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: "999")
 
         context = _context(
-            Request.from_url("http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"})
+            Request.from_url(
+                "http://editions", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
         )
 
         messages = []
@@ -973,7 +1067,9 @@ class TestHandleBook:
         self, extractor, progress, handle_book, monkeypatch
     ):
         """A book page parsed as nonexistent should enqueue a replacement, not create a pending record."""
-        monkeypatch.setattr(extractor, "_parse_book_page", lambda soup, book_id: {"is_nonexistent": True})
+        monkeypatch.setattr(
+            extractor, "_parse_book_page", lambda soup, book_id: {"is_nonexistent": True}
+        )
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: "999")
 
         context = _context(Request.from_url("http://x", label="book", user_data={"book_id": "123"}))
@@ -1001,7 +1097,11 @@ class TestHandleBook:
 
         def _parse_and_complete(soup, book_id):
             progress.done_event.set()
-            return {"is_nonexistent": False, "editions_url": "http://editions", "first_author_url": "http://author"}
+            return {
+                "is_nonexistent": False,
+                "editions_url": "http://editions",
+                "first_author_url": "http://author",
+            }
 
         monkeypatch.setattr(extractor, "_parse_book_page", _parse_and_complete)
 
@@ -1037,7 +1137,9 @@ class TestHandleBook:
         assert context.add_requests.await_count == 2
         assert progress.successes == 0
 
-    async def test_valid_book_with_no_urls_finalizes_immediately(self, extractor, handle_book, monkeypatch):
+    async def test_valid_book_with_no_urls_finalizes_immediately(
+        self, extractor, handle_book, monkeypatch
+    ):
         """A book with neither enrichment URL should be finalized in the same call, with no
         replacement enqueued when target_count is exactly met by this one record.
         """
@@ -1049,7 +1151,11 @@ class TestHandleBook:
         monkeypatch.setattr(
             extractor,
             "_parse_book_page",
-            lambda soup, book_id: {"is_nonexistent": False, "editions_url": None, "first_author_url": None},
+            lambda soup, book_id: {
+                "is_nonexistent": False,
+                "editions_url": None,
+                "first_author_url": None,
+            },
         )
 
         context = _context(Request.from_url("http://x", label="book", user_data={"book_id": "123"}))
@@ -1079,16 +1185,24 @@ class TestHandleAuthor:
         extractor._attach_handlers(crawler, progress)
         return crawler.router.handlers[extract_module.LABEL_AUTHOR]
 
-    async def test_merges_author_stats_into_first_contributor(self, extractor, progress, handle_author, monkeypatch):
+    async def test_merges_author_stats_into_first_contributor(
+        self, extractor, progress, handle_author, monkeypatch
+    ):
         """Author stats should be merged into contributors[0], preserving its existing fields."""
         progress.pending["123"] = {
             "contributors": [{"name": "A", "role": "Author"}],
             "_awaiting_author": True,
             "_awaiting_editions": False,
         }
-        monkeypatch.setattr(extractor, "_parse_author_page", lambda soup: {"num_followers": 10, "num_distinct_works": 5})
+        monkeypatch.setattr(
+            extractor,
+            "_parse_author_page",
+            lambda soup: {"num_followers": 10, "num_distinct_works": 5},
+        )
 
-        context = _context(Request.from_url("http://x", label="author", user_data={"book_id": "123"}))
+        context = _context(
+            Request.from_url("http://x", label="author", user_data={"book_id": "123"})
+        )
         await handle_author(context)
 
         assert progress.records[0]["contributors"][0] == {
@@ -1099,22 +1213,42 @@ class TestHandleAuthor:
         }
         assert "_awaiting_author" not in progress.records[0]
 
-    async def test_empty_contributors_still_clears_awaiting_flag(self, extractor, progress, handle_author, monkeypatch):
+    async def test_empty_contributors_still_clears_awaiting_flag(
+        self, extractor, progress, handle_author, monkeypatch
+    ):
         """If contributors is empty, the merge is skipped, but _awaiting_author is still cleared."""
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": True, "_awaiting_editions": False}
-        monkeypatch.setattr(extractor, "_parse_author_page", lambda soup: {"num_followers": 1, "num_distinct_works": 1})
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": True,
+            "_awaiting_editions": False,
+        }
+        monkeypatch.setattr(
+            extractor,
+            "_parse_author_page",
+            lambda soup: {"num_followers": 1, "num_distinct_works": 1},
+        )
 
-        context = _context(Request.from_url("http://x", label="author", user_data={"book_id": "123"}))
+        context = _context(
+            Request.from_url("http://x", label="author", user_data={"book_id": "123"})
+        )
         await handle_author(context)
 
         assert progress.records[0]["contributors"] == []
         assert progress.successes == 1
 
-    async def test_missing_pending_record_is_noop(self, extractor, progress, handle_author, monkeypatch):
+    async def test_missing_pending_record_is_noop(
+        self, extractor, progress, handle_author, monkeypatch
+    ):
         """An author callback for a book_id with no pending record should do nothing."""
-        monkeypatch.setattr(extractor, "_parse_author_page", lambda soup: {"num_followers": 1, "num_distinct_works": 1})
+        monkeypatch.setattr(
+            extractor,
+            "_parse_author_page",
+            lambda soup: {"num_followers": 1, "num_distinct_works": 1},
+        )
 
-        context = _context(Request.from_url("http://x", label="author", user_data={"book_id": "unknown"}))
+        context = _context(
+            Request.from_url("http://x", label="author", user_data={"book_id": "unknown"})
+        )
         await handle_author(context)
 
         assert progress.pending == {}
@@ -1154,22 +1288,32 @@ class TestHandleEditions:
         edition (has_more=False), and a parse failure (None, has_more=
         False -- bool(None and ...) must short-circuit safely, not raise).
         """
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": True}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
         monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: num_editions)
 
-        context = _context(Request.from_url("http://editions", label="editions", user_data={"book_id": "123"}))
+        context = _context(
+            Request.from_url("http://editions", label="editions", user_data={"book_id": "123"})
+        )
         await handle_editions(context)
 
         assert progress.records[0]["num_editions"] == num_editions
         assert progress.records[0]["has_more_editions"] is expected_has_more
 
-    async def test_pops_pending_editions_lookup_unconditionally(self, extractor, progress, handle_editions):
+    async def test_pops_pending_editions_lookup_unconditionally(
+        self, extractor, progress, handle_editions
+    ):
         """pending_editions_lookup should be cleared even when no matching pending record exists
         (e.g. a stray callback for a book that already finalized through another path).
         """
         progress.pending_editions_lookup["http://editions"] = "999"
 
-        context = _context(Request.from_url("http://editions", label="editions", user_data={"book_id": "999"}))
+        context = _context(
+            Request.from_url("http://editions", label="editions", user_data={"book_id": "999"})
+        )
         await handle_editions(context)
 
         assert "http://editions" not in progress.pending_editions_lookup
@@ -1217,13 +1361,21 @@ class TestHandleFailed:
         assert progress.pending == {}
         assert progress.records == []
 
-    async def test_unknown_label_skips_flag_clearing_but_still_finalizes(self, progress, handle_failed):
+    async def test_unknown_label_skips_flag_clearing_but_still_finalizes(
+        self, progress, handle_failed
+    ):
         """A label matching neither LABEL_AUTHOR nor LABEL_EDITIONS should skip both
         flag-clearing branches and fall through directly to _try_finalize.
         """
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": False}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": False,
+        }
 
-        context = _context(Request.from_url("http://x", label="some_other_label", user_data={"book_id": "123"}))
+        context = _context(
+            Request.from_url("http://x", label="some_other_label", user_data={"book_id": "123"})
+        )
         result = await handle_failed(context, Exception("boom"))
 
         assert result is None
@@ -1234,15 +1386,23 @@ class TestHandleFailed:
         [("123", {"book_id": "123"}), (None, {})],
         ids=["with_book_id", "without_book_id"],
     )
-    async def test_book_failure_enqueues_replacement(self, progress, handle_failed, monkeypatch, book_id, user_data):
+    async def test_book_failure_enqueues_replacement(
+        self, progress, handle_failed, monkeypatch, book_id, user_data
+    ):
         """A permanently failed book request should always enqueue a replacement, whether or
         not book_id resolved -- covers both sides of `if book_id is not None:`.
         """
         if book_id:
-            progress.pending[book_id] = {"contributors": [], "_awaiting_author": True, "_awaiting_editions": True}
+            progress.pending[book_id] = {
+                "contributors": [],
+                "_awaiting_author": True,
+                "_awaiting_editions": True,
+            }
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: "999")
 
-        context = _context(Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data=user_data))
+        context = _context(
+            Request.from_url("http://x", label=extract_module.LABEL_BOOK, user_data=user_data)
+        )
         result = await handle_failed(context, Exception("boom"))
 
         assert result is None
@@ -1250,13 +1410,21 @@ class TestHandleFailed:
             assert book_id not in progress.pending
         context.add_requests.assert_awaited_once()
 
-    @pytest.mark.parametrize("label", ["author", "editions"], ids=["author_failure", "editions_failure"])
-    async def test_author_or_editions_failure_clears_flag_and_finalizes(self, progress, handle_failed, label):
+    @pytest.mark.parametrize(
+        "label", ["author", "editions"], ids=["author_failure", "editions_failure"]
+    )
+    async def test_author_or_editions_failure_clears_flag_and_finalizes(
+        self, progress, handle_failed, label
+    ):
         """A permanently failed author or editions request should clear its own _awaiting_*
         flag and finalize, since the other enrichment step may already be done.
         """
         flag = "_awaiting_author" if label == "author" else "_awaiting_editions"
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": False}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": False,
+        }
         progress.pending["123"][flag] = True
 
         context = _context(Request.from_url("http://x", label=label, user_data={"book_id": "123"}))
@@ -1270,10 +1438,18 @@ class TestHandleFailed:
         """An editions failure should additionally clear the URL->book_id lookup entry --
         the one side effect unique to the LABEL_EDITIONS branch.
         """
-        progress.pending["123"] = {"contributors": [], "_awaiting_author": False, "_awaiting_editions": True}
+        progress.pending["123"] = {
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
         progress.pending_editions_lookup["http://x"] = "123"
 
-        context = _context(Request.from_url("http://x", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}))
+        context = _context(
+            Request.from_url(
+                "http://x", label=extract_module.LABEL_EDITIONS, user_data={"book_id": "123"}
+            )
+        )
         await handle_failed(context, Exception("boom"))
 
         assert "http://x" not in progress.pending_editions_lookup
@@ -1357,9 +1533,7 @@ class TestExtractOrchestration:
 
     async def test_returns_empty_list_when_no_ids_available(self, extractor, monkeypatch):
         """If no untried book IDs can be drawn at all, extract() should return [] with a warning."""
-        monkeypatch.setattr(
-            BookExtractor._Progress, "next_random_book_id", lambda self: None
-        )
+        monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: None)
         result = await extractor.extract(5, set())
         assert result == []
 
@@ -1370,9 +1544,15 @@ class TestExtractOrchestration:
         async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
             progress.records.extend(fake_records)
 
-        monkeypatch.setattr(extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock())
-        monkeypatch.setattr(extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None)
-        monkeypatch.setattr(extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion)
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
+        )
 
         result = await extractor.extract(2, set())
         assert result == fake_records
@@ -1383,9 +1563,15 @@ class TestExtractOrchestration:
         async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
             progress.records.extend([{"book_id": str(i)} for i in range(5)])
 
-        monkeypatch.setattr(extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock())
-        monkeypatch.setattr(extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None)
-        monkeypatch.setattr(extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion)
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
+        )
 
         result = await extractor.extract(2, set())
         assert len(result) == 2
@@ -1396,9 +1582,15 @@ class TestExtractOrchestration:
         async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
             progress.records.extend([{"book_id": "1"}])  # only 1 of 3 requested
 
-        monkeypatch.setattr(extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock())
-        monkeypatch.setattr(extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None)
-        monkeypatch.setattr(extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion)
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
+        )
+        monkeypatch.setattr(
+            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
+        )
 
         messages = []
         sink_id = logger.add(lambda msg: messages.append(msg), level="WARNING")

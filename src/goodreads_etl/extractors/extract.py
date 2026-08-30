@@ -23,12 +23,16 @@ import json
 import random
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from bs4 import BeautifulSoup
 from crawlee import ConcurrencySettings, Request
-from crawlee.crawlers import BasicCrawlingContext, BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from crawlee.crawlers import (
+    BasicCrawlingContext,
+    BeautifulSoupCrawler,
+    BeautifulSoupCrawlingContext,
+)
 from crawlee.storages import RequestQueue
 from loguru import logger
 
@@ -83,7 +87,9 @@ APOLLO_CACHE_MAX_DEPTH = 15  # generous ceiling against reference cycles; real p
 
 
 class BookExtractor:
-    """Drives one queue-based, self-healing sampling crawl per call, from raw HTML to final records."""
+    """Drives one queue-based, self-healing sampling crawl per call,
+    from raw HTML to final records.
+    """
 
     @dataclass(slots=True)
     class _Progress:
@@ -178,11 +184,12 @@ class BookExtractor:
         """
         if not ms:
             return None
-        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        epoch = datetime(1970, 1, 1, tzinfo=UTC)
         return (epoch + timedelta(milliseconds=ms)).date().isoformat()
 
     def _resolve_refs(self, state: dict[str, Any], node: Any, depth: int = 0) -> Any:
-        """Recursively replace Apollo cache {"__ref": "Type:id"} pointers with the object they point to.
+        """Recursively replace Apollo cache {"__ref": "Type:id"} pointers
+        with the object they point to.
 
         Args:
             state: The full flat Apollo cache dict (apolloState).
@@ -257,11 +264,13 @@ class BookExtractor:
         primary_edge = book.get("primaryContributorEdge") or {}
         primary_node = primary_edge.get("node") or {}
         if primary_node.get("name"):
-            contributors.append({
-                "name": primary_node.get("name"),
-                "url": primary_node.get("webUrl"),
-                "role": primary_edge.get("role") or "Author",
-            })
+            contributors.append(
+                {
+                    "name": primary_node.get("name"),
+                    "url": primary_node.get("webUrl"),
+                    "role": primary_edge.get("role") or "Author",
+                }
+            )
         for edge in book.get("secondaryContributorEdges") or []:
             if not isinstance(edge, dict):
                 continue
@@ -269,7 +278,9 @@ class BookExtractor:
             name = node.get("name")
             if not name:
                 continue
-            contributors.append({"name": name, "url": node.get("webUrl"), "role": edge.get("role") or "Contributor"})
+            contributors.append(
+                {"name": name, "url": node.get("webUrl"), "role": edge.get("role") or "Contributor"}
+            )
         return contributors
 
     def _parse_book_page(self, soup: BeautifulSoup, book_id: str) -> dict[str, Any]:
@@ -296,11 +307,26 @@ class BookExtractor:
 
         if book is None or not book.get("title"):
             return {
-                "title": None, "contributors": [], "first_author": None, "first_author_url": None,
-                "description": None, "genres": [], "series": [], "format": None, "pages": None,
-                "language": None, "asin": None, "isbn10": None, "isbn13": None, "publisher": None,
-                "publication_date": None, "average_rating": None, "ratings_count": None,
-                "reviews_count": None, "editions_url": None, "work_id": None,
+                "title": None,
+                "contributors": [],
+                "first_author": None,
+                "first_author_url": None,
+                "description": None,
+                "genres": [],
+                "series": [],
+                "format": None,
+                "pages": None,
+                "language": None,
+                "asin": None,
+                "isbn10": None,
+                "isbn13": None,
+                "publisher": None,
+                "publication_date": None,
+                "average_rating": None,
+                "ratings_count": None,
+                "reviews_count": None,
+                "editions_url": None,
+                "work_id": None,
                 "is_nonexistent": not catalog_guideline_violation,
                 "catalog_guideline_violation": catalog_guideline_violation,
             }
@@ -368,8 +394,12 @@ class BookExtractor:
         followers_match = FOLLOWERS_PATTERN.search(page_text)
         works_match = DISTINCT_WORKS_PATTERN.search(page_text)
         return {
-            "num_followers": int(followers_match.group(1).replace(",", "")) if followers_match else None,
-            "num_distinct_works": int(works_match.group(1).replace(",", "")) if works_match else None,
+            "num_followers": int(followers_match.group(1).replace(",", ""))
+            if followers_match
+            else None,
+            "num_distinct_works": int(works_match.group(1).replace(",", ""))
+            if works_match
+            else None,
         }
 
     def _parse_editions_page(self, soup: BeautifulSoup) -> int | None:
@@ -487,7 +517,11 @@ class BookExtractor:
         Returns:
             A pending record dict, not yet finalized.
         """
-        record = {key: value for key, value in book_data.items() if key not in ("is_nonexistent", "first_author_url", "editions_url")}
+        record = {
+            key: value
+            for key, value in book_data.items()
+            if key not in ("is_nonexistent", "first_author_url", "editions_url")
+        }
         record["book_id"] = book_id
         record["url"] = f"{BASE_BOOK_URL}{book_id}"
         record["num_editions"] = None
@@ -538,7 +572,9 @@ class BookExtractor:
             configure_logging=False,
         )
 
-    def _attach_handlers(self, crawler: BeautifulSoupCrawler, progress: "BookExtractor._Progress") -> None:
+    def _attach_handlers(
+        self, crawler: BeautifulSoupCrawler, progress: BookExtractor._Progress
+    ) -> None:
         """Wire book/author/editions/failure handlers onto crawler, closing over progress.
 
         Args:
@@ -552,12 +588,16 @@ class BookExtractor:
                 return None
             new_id = progress.next_random_book_id()
             if new_id is None:
-                self.logger.warning("No untried book ID found within attempt limit -- ID space may be exhausted")
+                self.logger.warning(
+                    "No untried book ID found within attempt limit -- ID space may be exhausted"
+                )
                 return None
             await context.add_requests([self._build_book_request(new_id)])
 
         async def _try_finalize(context: BeautifulSoupCrawlingContext, book_id: str) -> None:
-            """Assemble and store a pending record once it has no more enrichment steps outstanding."""
+            """Assemble and store a pending record,
+            once it has no more enrichment steps outstanding.
+            """
             record = progress.pending.get(book_id)
             if record is None or not self._is_ready_to_assemble(record):
                 return None
@@ -565,7 +605,9 @@ class BookExtractor:
             final_record = self._assemble_record(record)
             if not progress.add_record(final_record):
                 return None
-            self.logger.info(f"book_id={book_id}: collected ({progress.successes}/{progress.target_count} target)")
+            self.logger.info(
+                f"book_id={book_id}: collected ({progress.successes}/{progress.target_count} target)"  # NOQA E501
+            )
             if not progress.is_complete:
                 await _enqueue_replacement(context)
 
@@ -631,18 +673,22 @@ class BookExtractor:
             await _try_finalize(context, book_id)
 
         @crawler.failed_request_handler
-        async def handle_failed(context: BeautifulSoupCrawlingContext | BasicCrawlingContext, error: Exception) -> None:
+        async def handle_failed(
+            context: BeautifulSoupCrawlingContext | BasicCrawlingContext, error: Exception
+        ) -> None:
             """Handler for permanently failed Crawlee requests (e.g. exhausted retries, blocked)."""
             label = context.request.label
             book_id = self._optional_book_id(context.request)
-            self.logger.warning(f"Request failed permanently: label={label} book_id={book_id} error={error}")
+            self.logger.warning(
+                f"Request failed permanently: label={label} book_id={book_id} error={error}"
+            )
 
-            bs_context : BeautifulSoupCrawlingContext | BasicCrawlingContext = context 
+            bs_context: BeautifulSoupCrawlingContext | BasicCrawlingContext = context
 
             if label == LABEL_BOOK:
                 if book_id is not None:
                     progress.pending.pop(book_id, None)
-                await _enqueue_replacement(bs_context) # type: ignore
+                await _enqueue_replacement(bs_context)  # type: ignore
                 return None
 
             if book_id is None:
@@ -658,9 +704,14 @@ class BookExtractor:
                 progress.pending_editions_lookup.pop(context.request.url, None)
                 record["_awaiting_editions"] = False
 
-            await _try_finalize(bs_context, book_id) # type: ignore
+            await _try_finalize(bs_context, book_id)  # type: ignore
 
-    async def _drive_to_completion(self, crawler: BeautifulSoupCrawler, seed_requests: list[Request], progress: "BookExtractor._Progress") -> None:
+    async def _drive_to_completion(
+        self,
+        crawler: BeautifulSoupCrawler,
+        seed_requests: list[Request],
+        progress: BookExtractor._Progress,
+    ) -> None:
         """Run the crawler until naturally finished or the target is met, whichever first.
 
         Args:
@@ -671,7 +722,9 @@ class BookExtractor:
         run_task = asyncio.create_task(crawler.run(seed_requests))
         done_wait_task = asyncio.create_task(progress.done_event.wait())
 
-        done, pending = await asyncio.wait({run_task, done_wait_task}, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            {run_task, done_wait_task}, return_when=asyncio.FIRST_COMPLETED
+        )
 
         if done_wait_task in done and not run_task.done():
             run_task.cancel()
@@ -723,7 +776,9 @@ class BookExtractor:
 
         seed_count = min(max(CONCURRENCY_SETTINGS.desired_concurrency * 4, 1), target_count)
         seed_ids = [progress.next_random_book_id() for _ in range(seed_count)]
-        seed_requests = [self._build_book_request(book_id) for book_id in seed_ids if book_id is not None]
+        seed_requests = [
+            self._build_book_request(book_id) for book_id in seed_ids if book_id is not None
+        ]
         if not seed_requests:
             self.logger.warning("Unable to seed crawl -- no untried book IDs available")
             return []

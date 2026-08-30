@@ -12,14 +12,14 @@ redirected to pytest's tmp_path fixture.
 
 from __future__ import annotations
 
-import pytest
-import polars as pl
 from unittest.mock import MagicMock
+
+import polars as pl
+import pytest
 from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 import src.goodreads_etl.loaders.load as load_module
 from src.goodreads_etl.loaders.load import HF_RAW_DIR, SCRAPED_IDS_FILENAME
-
 
 # ---------------------------------------------------------------------------
 # Fake HfApi -- stands in for huggingface_hub.HfApi across all tests
@@ -241,7 +241,11 @@ class TestUpdateScrapedIds:
     def test_update_scraped_ids(self, loader, fake_api):
         """_update_scraped_ids should return the union of known and new ids."""
         result = loader._update_scraped_ids(new_book_ids=["3", "4"], known_book_ids={"1", "2"})
-        tracker_calls = [c for c in fake_api.upload_file_calls if c["path_in_repo"] == f"{HF_RAW_DIR}/{SCRAPED_IDS_FILENAME}"]
+        tracker_calls = [
+            c
+            for c in fake_api.upload_file_calls
+            if c["path_in_repo"] == f"{HF_RAW_DIR}/{SCRAPED_IDS_FILENAME}"
+        ]
         assert result == {"1", "2", "3", "4"}
         assert len(tracker_calls) == 1
 
@@ -262,8 +266,14 @@ class TestLoad:
         ]
         prior_known_ids = {"1", "2"}
 
-        df, updated_ids = loader.load(records, "books-part2.parquet", known_book_ids=prior_known_ids)
-        tracker_calls = [c for c in fake_api.upload_file_calls if c["path_in_repo"] == f"{HF_RAW_DIR}/{SCRAPED_IDS_FILENAME}"]
+        df, updated_ids = loader.load(
+            records, "books-part2.parquet", known_book_ids=prior_known_ids
+        )
+        tracker_calls = [
+            c
+            for c in fake_api.upload_file_calls
+            if c["path_in_repo"] == f"{HF_RAW_DIR}/{SCRAPED_IDS_FILENAME}"
+        ]
 
         assert updated_ids == {"1", "2", "3", "4"}
         assert df.height == 2
