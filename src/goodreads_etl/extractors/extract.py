@@ -13,7 +13,7 @@ replacement book_id, keeping the queue self-healing without any local
 retry loop.
 
 Exposes exactly one class, BookExtractor, with one public method:
-    - extract(target_count, tried_book_ids)
+- extract(target_count, tried_book_ids)
 """
 
 from __future__ import annotations
@@ -41,11 +41,16 @@ BASE_BOOK_URL = "https://www.goodreads.com/book/show/"
 EDITIONS_URL_TEMPLATE = "https://www.goodreads.com/work/editions/{work_id}"
 
 # --- Random book ID sampling -------------------------------------------------
-MIN_BOOK_ID = 1  # Known
-MAX_BOOK_ID = 10_000_000  # Unknown, just an arbitrary max value
-MAX_RANDOM_ID_ATTEMPTS = 500  # Give up drawing a fresh ID after this many collisions
+# Goodreads book IDs are dense enough in this range that random sampling
+# without replacement is a reasonable way to approximate a uniform sample
+# of the catalog, without needing to know the true ID distribution.
+MIN_BOOK_ID = 1  # Known: Goodreads book IDs start at 1.
+MAX_BOOK_ID = 10_000_000  # Unknown, just an arbitrary max value.
+MAX_RANDOM_ID_ATTEMPTS = 500  # Give up drawing a fresh ID after this many collisions.
 
 # --- Crawlee route labels -----------------------------------------------------
+# These labels are attached to each Request and read back in
+# _attach_handlers to route it to the correct handler function below.
 LABEL_BOOK = "book"
 LABEL_AUTHOR = "author"
 LABEL_EDITIONS = "editions"
@@ -65,17 +70,25 @@ REQUEST_HANDLER_TIMEOUT_SECONDS = 60
 CONCURRENCY_SETTINGS = ConcurrencySettings(
     desired_concurrency=5,
     max_concurrency=10,
-    max_tasks_per_minute=60,  # ~1 request/second, matching Goodreads' documented API tolerance
+    max_tasks_per_minute=60,  # ~1 request/second, matching Goodreads' documented API tolerance.
 )
 
 # --- Contributor stats text patterns -------------------------------------------
+# Matched against an author profile page's plain text (not structured data --
+# Goodreads doesn't expose these two fields in the page's Apollo/NEXT_DATA cache).
 FOLLOWERS_PATTERN = re.compile(r"followers\s*\(([\d,]+)\)", re.I)
 DISTINCT_WORKS_PATTERN = re.compile(r"([\d,]+)\s+distinct\s+works?", re.I)
 
 # --- Catalog guideline violation -----------------------------------------------
+# Goodreads shows this exact phrase on book pages it has delisted for policy
+# reasons; matching on it lets us distinguish "removed for cause" from
+# "never existed", since both otherwise look like an empty/missing page.
 CATALOG_GUIDELINE_PATTERN = re.compile(r"does\s+not\s+meet\s+our\s+catalog\s+guidelines", re.I)
 
 # --- Editions count -------------------------------------------------------------
+# Two patterns because Goodreads renders the editions-listing page
+# differently depending on total count: a paginated "Showing X-Y of N"
+# header for many editions, or a bare "N Editions" heading for few.
 EDITIONS_HEADING_PATTERN = re.compile(r"\b([\d,]+)\s+editions?\b", re.I)
 EDITIONS_TOTAL_PATTERN = re.compile(
     r"showing\s+(?:[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)|all\s+([\d,]+))",
@@ -94,6 +107,10 @@ class BookExtractor:
     @dataclass(slots=True)
     class _Progress:
         """Mutable state shared across all route handlers for one crawl run.
+
+        A single _Progress instance is created per extract() call and
+        closed over by every route handler attached in _attach_handlers,
+        so all handlers read/write the same in-flight crawl state.
 
         Attributes:
             target_count: Number of NEW valid book records to collect this run.
@@ -157,6 +174,9 @@ class BookExtractor:
                 return False
             self.records.append(record)
             if self.is_complete:
+                # Wakes up _drive_to_completion's asyncio.wait(), which is
+                # what lets the crawl stop as soon as the target is hit
+                # instead of waiting for the whole queue to drain naturally.
                 self.done_event.set()
             return True
 
@@ -191,6 +211,13 @@ class BookExtractor:
         """Recursively replace Apollo cache {"__ref": "Type:id"} pointers
         with the object they point to.
 
+        Apollo's normalized cache stores every entity flat (keyed by
+        "Type:id") and replaces nested object references with a
+        {"__ref": "Type:id"} pointer instead of embedding the object
+        directly. This walks an already-parsed JSON structure and
+        substitutes each pointer with the real object from state,
+        recursively, so callers get a fully "hydrated" object graph.
+
         Args:
             state: The full flat Apollo cache dict (apolloState).
             node: The current node being resolved (dict, list, or scalar).
@@ -202,11 +229,15 @@ class BookExtractor:
         if depth > APOLLO_CACHE_MAX_DEPTH:
             return None
         if isinstance(node, dict):
+            # A dict whose ONLY key is "__ref" is itself a pointer -- resolve
+            # it to the target object and recurse into that instead.
             if list(node.keys()) == ["__ref"]:
                 return self._resolve_refs(state, state.get(node["__ref"]), depth + 1)
+            # Otherwise it's a regular object: resolve every value in place.
             return {key: self._resolve_refs(state, value, depth + 1) for key, value in node.items()}
         if isinstance(node, list):
             return [self._resolve_refs(state, item, depth + 1) for item in node]
+        # Scalars (str, int, float, bool, None) pass through unchanged.
         return node
 
     def _load_apollo_state(self, soup: BeautifulSoup) -> dict[str, Any] | None:
@@ -225,6 +256,8 @@ class BookExtractor:
             payload = json.loads(tag.string)
             return payload["props"]["pageProps"]["apolloState"]
         except (json.JSONDecodeError, KeyError, TypeError):
+            # Malformed JSON, or valid JSON missing the expected keys --
+            # either way, treat it the same as "no data available".
             return None
 
     def _find_book_entry(self, apollo_state: dict[str, Any], book_id: str) -> dict | None:
@@ -237,6 +270,10 @@ class BookExtractor:
         Returns:
             The resolved (de-referenced) Book object dict, or None if not found.
         """
+        # Apollo cache keys look like "Book:kca://book/1234567", so we scan
+        # every entry for one whose legacyId matches the book_id we asked
+        # for -- str() on both sides since legacyId can come back as either
+        # an int or a str depending on the page.
         raw_key = next(
             (
                 key
@@ -261,6 +298,8 @@ class BookExtractor:
             List of dicts with name, url, and role for every contributor found.
         """
         contributors = []
+        # The primary contributor edge is always the book's main author.
+        # Its role isn't always populated by Goodreads, so default to "Author".
         primary_edge = book.get("primaryContributorEdge") or {}
         primary_node = primary_edge.get("node") or {}
         if primary_node.get("name"):
@@ -271,6 +310,9 @@ class BookExtractor:
                     "role": primary_edge.get("role") or "Author",
                 }
             )
+        # Secondary edges cover illustrators, translators, editors, etc.
+        # Entries can be malformed (None, wrong type) in the raw cache, so
+        # skip anything that isn't a usable dict with a name.
         for edge in book.get("secondaryContributorEdges") or []:
             if not isinstance(edge, dict):
                 continue
@@ -305,6 +347,9 @@ class BookExtractor:
         apollo_state = self._load_apollo_state(soup)
         book = self._find_book_entry(apollo_state, book_id) if apollo_state else None
 
+        # No book entry found (or it has no title) means either the ID was
+        # never issued, or the book was pulled for a catalog violation --
+        # is_nonexistent distinguishes the two so callers can tell them apart.
         if book is None or not book.get("title"):
             return {
                 "title": None,
@@ -349,6 +394,8 @@ class BookExtractor:
         contributors = self._extract_all_contributors(book)
         first_author_url = contributors[0]["url"] if contributors else None
 
+        # description comes back as raw HTML from Goodreads -- strip tags
+        # and normalize to plain text with newlines between paragraphs.
         description_html = book.get("description")
         description_text = (
             BeautifulSoup(description_html, "html.parser").get_text("\n").strip()
@@ -412,6 +459,8 @@ class BookExtractor:
             The exact total number of editions, or None if not found.
         """
         page_text = soup.get_text(" ", strip=True)
+        # Try the pagination-style total first ("Showing 1-30 of 214" / "Showing all 5"),
+        # since it's the exact count; fall back to the bare heading only if absent.
         match = EDITIONS_TOTAL_PATTERN.search(page_text)
         if match:
             return int((match.group(1) or match.group(2)).replace(",", ""))
@@ -492,6 +541,9 @@ class BookExtractor:
     def _optional_book_id(self, request: Request) -> str | None:
         """Extract book_id from a request's user_data, if valid.
 
+        Used by the failure handler, where the request may be malformed
+        or partially built and raising is not desirable.
+
         Args:
             request: The Crawlee request carrying book_id in its user_data.
 
@@ -517,6 +569,9 @@ class BookExtractor:
         Returns:
             A pending record dict, not yet finalized.
         """
+        # is_nonexistent/first_author_url/editions_url are internal
+        # bookkeeping fields used only to route enrichment requests -- they
+        # don't belong in the final persisted record.
         record = {
             key: value
             for key, value in book_data.items()
@@ -526,6 +581,8 @@ class BookExtractor:
         record["url"] = f"{BASE_BOOK_URL}{book_id}"
         record["num_editions"] = None
         record["has_more_editions"] = False
+        # A record only awaits enrichment it actually needs -- a book with
+        # no first_author_url (e.g. anonymous work) is never blocked on it.
         record["_awaiting_author"] = bool(book_data.get("first_author_url"))
         record["_awaiting_editions"] = bool(book_data.get("editions_url"))
         return record
@@ -577,13 +634,26 @@ class BookExtractor:
     ) -> None:
         """Wire book/author/editions/failure handlers onto crawler, closing over progress.
 
+        All four handlers below are nested functions defined inside this
+        method specifically so they close over `progress` and `self`
+        without needing it threaded through as an explicit parameter on
+        every Crawlee callback -- Crawlee calls these with only a
+        `context` argument, so anything else they need must come from
+        the enclosing scope.
+
         Args:
             crawler: The BeautifulSoupCrawler instance to attach routes to.
             progress: Shared mutable _Progress tracking this run's state.
         """
 
         async def _enqueue_replacement(context: BeautifulSoupCrawlingContext) -> None:
-            """Enqueue one fresh random book ID unless the run is already complete."""
+            """Enqueue one fresh random book ID unless the run is already complete.
+
+            This is the "self-healing" mechanism: every terminal outcome
+            for a book (nonexistent, fully assembled, or failed) calls
+            this to keep the queue fed with a replacement candidate,
+            without ever needing an external retry loop.
+            """
             if progress.is_complete:
                 return None
             new_id = progress.next_random_book_id()
@@ -600,10 +670,16 @@ class BookExtractor:
             """
             record = progress.pending.get(book_id)
             if record is None or not self._is_ready_to_assemble(record):
+                # Either this book_id isn't pending (already finalized or
+                # never started), or it's still waiting on author/editions
+                # enrichment -- either way, nothing to do yet.
                 return None
             progress.pending.pop(book_id)
             final_record = self._assemble_record(record)
             if not progress.add_record(final_record):
+                # add_record returns False only if the run already hit its
+                # target between this record starting and finishing --
+                # discard it silently rather than enqueue a replacement.
                 return None
             self.logger.info(
                 f"book_id={book_id}: collected ({progress.successes}/{progress.target_count} target)"  # NOQA E501
@@ -615,12 +691,15 @@ class BookExtractor:
         async def handle_book(context: BeautifulSoupCrawlingContext) -> None:
             """Route handler for Goodreads book pages."""
             if progress.done_event.is_set():
+                # Target was already hit by another in-flight request --
+                # avoid doing wasted work or enqueuing anything further.
                 return None
 
             book_id = self._require_book_id(context.request)
             book_data = self._parse_book_page(context.soup, book_id)
 
             if book_data["is_nonexistent"]:
+                # Terminal outcome: dead ID, immediately draw a replacement.
                 await _enqueue_replacement(context)
                 return None
 
@@ -630,6 +709,8 @@ class BookExtractor:
             record = self._start_record(book_id, book_data)
             progress.pending[book_id] = record
 
+            # Fan out enrichment requests for whichever fields this book
+            # actually needs -- a book may need neither, either, or both.
             editions_url = book_data.get("editions_url")
             first_author_url = book_data.get("first_author_url")
             if editions_url:
@@ -638,6 +719,8 @@ class BookExtractor:
             if first_author_url:
                 await context.add_requests([self._build_author_request(first_author_url, book_id)])
 
+            # If this book needed no enrichment at all, it's already
+            # ready to finalize right here.
             await _try_finalize(context, book_id)
 
         @crawler.router.handler(LABEL_AUTHOR)
@@ -646,10 +729,13 @@ class BookExtractor:
             book_id = self._require_book_id(context.request)
             record = progress.pending.get(book_id)
             if record is None:
+                # The book's record was already finalized or discarded
+                # (e.g. target hit) before this author page returned.
                 return None
 
             author_stats = self._parse_author_page(context.soup)
             if record.get("contributors"):
+                # Merge follower/works stats into the primary author entry only.
                 record["contributors"][0] = {**record["contributors"][0], **author_stats}
             record["_awaiting_author"] = False
 
@@ -683,9 +769,14 @@ class BookExtractor:
                 f"Request failed permanently: label={label} book_id={book_id} error={error}"
             )
 
+            # Crawlee's failed_request_handler type covers both crawler
+            # kinds; in practice we only ever get BeautifulSoupCrawlingContext
+            # here since this crawler is BeautifulSoupCrawler-only.
             bs_context: BeautifulSoupCrawlingContext | BasicCrawlingContext = context
 
             if label == LABEL_BOOK:
+                # A permanently failed book request is a terminal outcome
+                # just like a nonexistent book -- drop it and replace it.
                 if book_id is not None:
                     progress.pending.pop(book_id, None)
                 await _enqueue_replacement(bs_context)  # type: ignore
@@ -698,6 +789,10 @@ class BookExtractor:
             if record is None:
                 return None
 
+            # A failed author/editions request just means that particular
+            # enrichment never arrives -- clear its flag so the record can
+            # still finalize (with that field left at its default/None)
+            # instead of hanging forever waiting on it.
             if label == LABEL_AUTHOR:
                 record["_awaiting_author"] = False
             elif label == LABEL_EDITIONS:
@@ -714,6 +809,11 @@ class BookExtractor:
     ) -> None:
         """Run the crawler until naturally finished or the target is met, whichever first.
 
+        Races the crawler's own run() coroutine against progress.done_event:
+        whichever finishes first wins, and if the target is hit before the
+        queue naturally empties, the still-running crawler task is
+        cancelled rather than left to drain the remaining queue.
+
         Args:
             crawler: Configured BeautifulSoupCrawler instance.
             seed_requests: Initial batch of requests to seed the queue with.
@@ -727,6 +827,8 @@ class BookExtractor:
         )
 
         if done_wait_task in done and not run_task.done():
+            # Target was hit while the crawler was still running --
+            # cancel it rather than let it keep processing an already-full queue.
             run_task.cancel()
         for task in pending:
             task.cancel()
@@ -734,6 +836,8 @@ class BookExtractor:
         try:
             await run_task
         except asyncio.CancelledError:
+            # Expected when we just cancelled run_task above; swallow it
+            # so a successful early-completion isn't reported as an error.
             pass
 
     async def _reset_request_queue_storage(self) -> None:
@@ -774,12 +878,17 @@ class BookExtractor:
 
         progress = self._Progress(target_count=target_count, tried_book_ids=tried_book_ids)
 
+        # Seed enough requests up front that the pool has real concurrency
+        # to work with from the very first tick, capped so we never seed
+        # more books than we actually need.
         seed_count = min(max(CONCURRENCY_SETTINGS.desired_concurrency * 4, 1), target_count)
         seed_ids = [progress.next_random_book_id() for _ in range(seed_count)]
         seed_requests = [
             self._build_book_request(book_id) for book_id in seed_ids if book_id is not None
         ]
         if not seed_requests:
+            # next_random_book_id() returned None for every attempt -- the
+            # untried ID space is exhausted before we even started.
             self.logger.warning("Unable to seed crawl -- no untried book IDs available")
             return []
 
@@ -794,4 +903,7 @@ class BookExtractor:
                 "(queue exhausted or ID space too sparse)"
             )
 
+        # Slice defensively to target_count -- in practice this should
+        # already hold since add_record() refuses once is_complete is True,
+        # but this guarantees the contract even if that invariant ever slips.
         return progress.records[:target_count]

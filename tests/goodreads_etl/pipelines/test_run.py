@@ -1,14 +1,15 @@
 """Pytest suite for run.py's BookRunner.
 
 Covers the orchestration logic in BookRunner.run: the already-met-target
-short-circuit, delegating to BookExtractor.extract for the remaining
-count, batching results through BookLoader.load in PARQUET_BATCH_SIZE
-chunks, and returning the correctly-concatenated DataFrame of records
-collected in the current run.
+short-circuit, and the chunked extraction/load loop (calling
+BookExtractor.extract repeatedly with at most PARQUET_BATCH_SIZE per
+call, checkpointing each chunk through BookLoader.load immediately,
+incrementing part numbers, and threading known_book_ids across chunks).
 
 BookExtractor and BookLoader are both fully mocked -- no network calls,
 no real Hugging Face Hub access, no real crawl. This suite only verifies
-that BookRunner wires the two together correctly.
+that BookRunner wires the two together correctly. run() always returns
+None by design, so no test asserts on a returned DataFrame.
 """
 
 from __future__ import annotations
@@ -95,20 +96,38 @@ class TestBookRunnerRun:
         runner.extractor.extract.assert_not_called()
         runner.loader.load.assert_not_called()
 
-    async def test_batches_records_correctly_across_multiple_load_calls(self, runner, monkeypatch):
-        """Splitting, part numbering, ID threading, and concatenation should all work together.
+    async def test_no_batches_persisted_when_first_chunk_returns_nothing(self, runner):
+        """If the first chunk call returns no records, the loop should stop without loading."""
+        runner.loader.load_scraped_ids.return_value = set()
+        runner.extractor.extract.return_value = []
 
-        With PARQUET_BATCH_SIZE=2 and 4 new records, run() should:
-        - call loader.load exactly twice (two batches of 2),
-        - use a different filename for each batch (incrementing part number),
-        - thread each batch's updated known_book_ids into the next batch's call.
+        await runner.run(sample_size=5)
+
+        runner.extractor.extract.assert_called_once()
+        runner.loader.load.assert_not_called()
+
+    async def test_batches_records_correctly_across_multiple_chunks(self, runner, monkeypatch):
+        """Chunk sizing, part numbering, and known-ID threading should all work together.
+
+        With PARQUET_BATCH_SIZE=2 and a remaining target of 4 (1 known),
+        run() should call extract() twice with chunk_target=2 each time
+        (not the full remaining target), call loader.load twice, use a
+        different filename per batch (incrementing part number), and
+        thread each batch's updated known_book_ids into the next batch's
+        load() call.
+
+        PARQUET_BATCH_SIZE is patched on run_module here, since that's
+        where the constant is now defined (moved out of load.py).
         """
         monkeypatch.setattr(run_module, "PARQUET_BATCH_SIZE", 2)
 
-        records = [_make_record(str(i)) for i in range(1, 5)]
         runner.loader.load_scraped_ids.return_value = {"123"}
-        runner.extractor.extract.return_value = records
         runner.loader.get_next_part_number.return_value = 1
+
+        async def fake_extract(chunk_target, tried_ids):
+            return [_make_record(str(i)) for i in range(chunk_target)]
+
+        runner.extractor.extract.side_effect = fake_extract
 
         seen_known_ids_args = []
 
@@ -122,10 +141,13 @@ class TestBookRunnerRun:
         result = await runner.run(sample_size=5)
 
         assert result is None
-        assert runner.loader.load.call_count == 2
 
+        chunk_targets = [c.args[0] for c in runner.extractor.extract.call_args_list]
+        assert chunk_targets == [2, 2]
+
+        assert runner.loader.load.call_count == 2
         filenames_used = [c.args[1] for c in runner.loader.load.call_args_list]
         assert filenames_used[0] != filenames_used[1]
 
         assert seen_known_ids_args[0] == {"123"}
-        assert seen_known_ids_args[1] == {"123", "1", "2"}
+        assert seen_known_ids_args[1] == {"123", "0", "1"}

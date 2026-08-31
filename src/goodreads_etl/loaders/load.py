@@ -5,9 +5,9 @@ checkpointed Parquet files on disk and on the Hub, plus the book_ids
 tracker used across runs to avoid re-scraping the same books.
 
 Exposes exactly one class, BookLoader, with these public methods:
-    - get_next_part_number()
-    - load_scraped_ids()
-    - load(records, filename, known_book_ids)
+- get_next_part_number()
+- load_scraped_ids()
+- load(records, filename, known_book_ids)
 """
 
 from __future__ import annotations
@@ -23,13 +23,20 @@ from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 from loguru import logger
 
+# Populates os.environ from a local .env file (e.g. HF_TOKEN) if present;
+# a no-op in environments where the variables are already set externally
+# (CI, Docker, etc.).
 load_dotenv()
 
 # --- Local staging output -----------------------------------------------------------
+# NOTE: PARQUET_BATCH_SIZE lives in run.py, not here -- how many records
+# get grouped into one checkpoint is a pipeline-orchestration concern
+# (BookRunner decides chunk sizing), not a load-stage concern. BookLoader
+# just persists and uploads whatever batch of records it's handed,
+# regardless of size.
 OUTPUT_DIR = Path(".")
 PARQUET_FILENAME_TEMPLATE = "books-part{part}.parquet"
 PARQUET_FILENAME_PATTERN = re.compile(r"books-part(\d+)\.parquet$")
-PARQUET_BATCH_SIZE = 5_000
 
 # --- Hugging Face Hub sink -----------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -38,6 +45,9 @@ HF_REPO_TYPE = "dataset"
 HF_RAW_DIR = "raw"
 
 # --- Scraped-IDs tracker -----------------------------------------------------------
+# Single Parquet file on the Hub listing every book_id ever successfully
+# scraped, across all runs -- consulted before each run to know which IDs
+# to skip and how much of the sample_size target remains.
 SCRAPED_IDS_FILENAME = "book_ids.parquet"
 
 
@@ -63,6 +73,10 @@ class BookLoader:
 
     def _save_locally(self, df: pl.DataFrame, filename: str) -> Path:
         """Write a DataFrame to a local Parquet file under OUTPUT_DIR.
+
+        Local staging happens before every Hub upload, both for the data
+        batches and for the book_ids tracker, since HfApi.upload_file
+        requires a real file path rather than an in-memory buffer.
 
         Args:
             df: The DataFrame to persist.
@@ -95,6 +109,10 @@ class BookLoader:
     def get_next_part_number(self) -> int:
         """Determine the next books-part number to use, continuing from the Hub.
 
+        Queries the Hub directly (rather than tracking part numbers
+        locally) so that numbering stays correct even across runs on
+        different machines, or after a local checkout is wiped.
+
         Returns:
             1 if no books-part*.parquet files exist yet, otherwise the
             highest existing part number + 1.
@@ -126,6 +144,8 @@ class BookLoader:
                 token=HF_TOKEN,
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
+            # No tracker file yet (first-ever run) or the repo doesn't
+            # exist yet -- either way, start from an empty known-IDs set.
             self.logger.info("No book_ids tracker found on the Hub yet, starting fresh")
             return set()
 
@@ -144,6 +164,8 @@ class BookLoader:
             The updated, merged set of all known book_ids.
         """
         updated_ids = known_book_ids | set(new_book_ids)
+        # Sorted purely for a stable, human-readable diff between commits
+        # on the Hub -- set order isn't otherwise meaningful here.
         df = pl.DataFrame({"book_id": sorted(updated_ids)})
         local_path = self._save_locally(df, SCRAPED_IDS_FILENAME)
         self._upload(
@@ -155,6 +177,11 @@ class BookLoader:
         self, records: list[dict[str, Any]], filename: str, known_book_ids: set[str]
     ) -> tuple[pl.DataFrame, set[str]]:
         """Batch records into a DataFrame, save and push it, then update the scraped-ids tracker.
+
+        This is the single checkpoint operation the pipeline calls once
+        per batch: write the data file, upload it, then immediately
+        update the tracker so that a crash right after this call still
+        leaves the Hub in a consistent, resumable state.
 
         Args:
             records: List of final book record dicts to persist.
@@ -172,6 +199,9 @@ class BookLoader:
         self._upload(local_path, filename, f"Add {filename} ({df.height} books)")
         self.logger.info(f"Sunk {HF_RAW_DIR}/{filename}: {df.height} row(s) pushed to {HF_REPO_ID}")
 
+        # Tracker update happens AFTER the data upload succeeds, so a
+        # failure here still leaves the data file safely on the Hub even
+        # if the tracker itself doesn't get updated this call.
         updated_ids = self._update_scraped_ids(df.get_column("book_id").to_list(), known_book_ids)
         self.logger.info(f"Tracker updated: {len(updated_ids)} book_id(s) now recorded")
 
