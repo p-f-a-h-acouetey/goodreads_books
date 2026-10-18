@@ -18,8 +18,8 @@ import polars as pl
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
-import src.goodreads_etl.loaders.load as load_module
-from src.goodreads_etl.loaders.load import HF_RAW_DIR, SCRAPED_IDS_FILENAME
+import src.goodreads_books.goodreads_etl.loaders.load as load_module
+from src.goodreads_books.goodreads_etl.loaders.load import HF_RAW_DIR, SCRAPED_IDS_FILENAME
 
 # ---------------------------------------------------------------------------
 # Fake HfApi -- stands in for huggingface_hub.HfApi across all tests

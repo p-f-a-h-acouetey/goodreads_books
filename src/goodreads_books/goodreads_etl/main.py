@@ -16,7 +16,7 @@ import sys
 
 from loguru import logger
 
-from src.goodreads_etl.pipelines.run import DEFAULT_SAMPLE_SIZE, BookRunner
+from src.goodreads_books.goodreads_etl.pipelines.run import DEFAULT_SAMPLE_SIZE, BookRunner
 
 
 def _parse_args() -> argparse.Namespace:
@@ -30,7 +30,7 @@ def _parse_args() -> argparse.Namespace:
         "--sample-size",
         type=int,
         default=DEFAULT_SAMPLE_SIZE,
-        help=f"Target total number of valid book records the dataset should hold (default: {DEFAULT_SAMPLE_SIZE}).",  # NOQA E501
+        help=f"Target total number of valid book records the dataset should hold (default: {DEFAULT_SAMPLE_SIZE}).",
     )
     return parser.parse_args()
 

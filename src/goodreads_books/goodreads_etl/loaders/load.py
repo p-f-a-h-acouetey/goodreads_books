@@ -34,7 +34,7 @@ load_dotenv()
 # (BookRunner decides chunk sizing), not a load-stage concern. BookLoader
 # just persists and uploads whatever batch of records it's handed,
 # regardless of size.
-OUTPUT_DIR = Path(".")
+OUTPUT_DIR = Path("data")
 PARQUET_FILENAME_TEMPLATE = "books-part{part}.parquet"
 PARQUET_FILENAME_PATTERN = re.compile(r"books-part(\d+)\.parquet$")
 
@@ -150,7 +150,7 @@ class BookLoader:
             return set()
 
         scraped_ids = set(pl.read_parquet(local_path).get_column("book_id").to_list())
-        self.logger.info(f"Loaded {len(scraped_ids)} already-scraped book_id(s) from the tracker")
+        self.logger.info(f"Loaded {len(scraped_ids)} already scraped book_id(s) from the tracker")
         return scraped_ids
 
     def _update_scraped_ids(self, new_book_ids: list[str], known_book_ids: set[str]) -> set[str]:

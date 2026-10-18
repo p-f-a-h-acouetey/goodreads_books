@@ -1,26 +1,16 @@
-"""Pytest suite for extract.py's BookExtractor.
+"""Offline unit tests for BookExtractor.
 
-Split into groups matching BookExtractor's own internal structure:
-- Parsing (pure functions fed real-shaped mock HTML via BeautifulSoup)
-- Record assembly (pure dict manipulation)
-- Request building (real crawlee.Request objects, no network)
-- _Progress (the nested dataclass, pure state machine)
-- Crawl construction and routing (_build_crawler, _attach_handlers' nested
-  route/failure handlers, _drive_to_completion, _reset_request_queue_storage)
-- extract() orchestration (the async entry point, with the crawler itself
-  mocked out since a real crawl requires network access)
-
-No network calls are made anywhere in this suite. Crawlee's
-BeautifulSoupCrawler is only ever constructed (never .run() against a real
-queue) except where explicitly faked; extract()'s own orchestration logic
-is tested by patching _build_crawler/_attach_handlers/_drive_to_completion.
+Parser, record-assembly, request-building, and routing regression tests are
+retained. Lifecycle tests mock storage and crawler construction, verify
+isolated in-memory queue injection, graceful stop, cleanup, and propagation
+of errors and cancellation. Run with pytest-asyncio in auto mode.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -30,8 +20,12 @@ from bs4 import BeautifulSoup
 from crawlee import Request
 from loguru import logger
 
-import src.goodreads_etl.extractors.extract as extract_module
-from src.goodreads_etl.extractors.extract import BASE_BOOK_URL, EDITIONS_URL_TEMPLATE, BookExtractor
+import goodreads_books.goodreads_etl.extractors.extract as extract_module
+from goodreads_books.goodreads_etl.extractors.extract import (
+    BASE_BOOK_URL,
+    EDITIONS_URL_TEMPLATE,
+    BookExtractor,
+)
 
 _RAISES = object()
 
@@ -594,7 +588,7 @@ class TestRequireBookId:
         ids=["valid_book_id", "missing_book_id", "wrong_type_book_id"],
     )
     def test_require_book_id_cases(self, extractor, user_data, expected):
-        """_require_book_id should return a valid string book_id, or raise ValueError otherwise.
+        """_require_book_id should return a valid string book_id, or raise TypeError otherwise.
 
         Covers: a valid string book_id returned as-is, book_id missing
         from user_data, and book_id present but of the wrong type (int
@@ -602,7 +596,7 @@ class TestRequireBookId:
         """
         req = Request.from_url("http://x", user_data=user_data)
         if expected is _RAISES:
-            with pytest.raises(ValueError, match="Missing or invalid book_id"):
+            with pytest.raises(TypeError, match="Expected book_id to be a string"):
                 extractor._require_book_id(req)
         else:
             assert extractor._require_book_id(req) == expected
@@ -673,18 +667,21 @@ class TestProgress:
         assert progress.add_record({"book_id": "2"}) is False
         assert progress.successes == 1
 
-    def test_add_record_sets_done_event_when_target_met(self):
-        """done_event should be set exactly when the target_count is reached."""
-        progress = BookExtractor._Progress(target_count=1, tried_book_ids=set())
-        assert not progress.done_event.is_set()
-        progress.add_record({"book_id": "1"})
-        assert progress.done_event.is_set()
+    def test_add_record_marks_progress_complete_at_target(self):
+        """Completion is derived from record count, without a separate event."""
+        progress = BookExtractor._Progress(target_count=2, tried_book_ids=set())
+        assert progress.add_record({"book_id": "1"}) is True
+        assert progress.is_complete is False
+        assert progress.add_record({"book_id": "2"}) is True
+        assert progress.is_complete is True
+        assert progress.add_record({"book_id": "3"}) is False
+        assert progress.successes == 2
 
 
 # ---------------------------------------------------------------------------
 # GROUP 5 -- Crawl construction and routing
 #
-# _build_crawler is a pure constructor, tested directly. _attach_handlers
+# _build_crawler is async and tested with mocked storage. _attach_handlers
 # registers four nested closures (handle_book/handle_author/handle_editions
 # via @crawler.router.handler(label), plus handle_failed via
 # @crawler.failed_request_handler) that are otherwise unreachable by name --
@@ -694,7 +691,7 @@ class TestProgress:
 # .failed_request_handler as decorators. Each handler is then called with a
 # SimpleNamespace context (a plain stand-in for Crawlee's own plain context
 # object) and real crawlee.Request instances -- no MagicMock behavior is
-# relied upon anywhere in this group.
+# used for route registration; stop is a synchronous recording mock.
 # ---------------------------------------------------------------------------
 
 
@@ -718,6 +715,7 @@ class _FakeCrawler:
     def __init__(self):
         self.router = _FakeRouter()
         self.failed_handler = None
+        self.stop = MagicMock()
 
     def failed_request_handler(self, fn):
         self.failed_handler = fn
@@ -725,14 +723,86 @@ class _FakeCrawler:
 
 
 class TestBuildCrawler:
-    """Tests for _build_crawler."""
+    """Verify queue ownership without opening storage or constructing a crawler."""
 
-    def test_returns_beautifulsoup_crawler_instance(self, extractor):
-        """_build_crawler should return an un-routed BeautifulSoupCrawler instance."""
-        from crawlee.crawlers import BeautifulSoupCrawler
+    @pytest.fixture
+    def dependencies(self, monkeypatch):
+        queue = SimpleNamespace(drop=AsyncMock())
+        storage = MagicMock(name="memory_storage")
+        memory_factory = MagicMock(return_value=storage)
+        open_queue = AsyncMock(return_value=queue)
+        crawler_factory = MagicMock()
+        monkeypatch.setattr(extract_module, "MemoryStorageClient", memory_factory)
+        monkeypatch.setattr(extract_module.RequestQueue, "open", open_queue)
+        monkeypatch.setattr(extract_module, "BeautifulSoupCrawler", crawler_factory)
+        return SimpleNamespace(
+            queue=queue,
+            storage=storage,
+            memory_factory=memory_factory,
+            open_queue=open_queue,
+            crawler_factory=crawler_factory,
+        )
 
-        crawler = extractor._build_crawler()
-        assert isinstance(crawler, BeautifulSoupCrawler)
+    async def test_injects_queue_and_memory_client(self, extractor, dependencies):
+        deps = dependencies
+        crawler = await extractor._build_crawler()
+        assert crawler is deps.crawler_factory.return_value
+        deps.memory_factory.assert_called_once_with()
+        deps.open_queue.assert_awaited_once()
+        options = deps.open_queue.await_args.kwargs
+        assert options["storage_client"] is deps.storage
+        assert options["name"].startswith("goodreads-extract-")
+        deps.crawler_factory.assert_called_once_with(
+            storage_client=deps.storage,
+            request_manager=deps.queue,
+            max_request_retries=extract_module.MAX_REQUEST_RETRIES,
+            request_handler_timeout=timedelta(
+                seconds=extract_module.REQUEST_HANDLER_TIMEOUT_SECONDS
+            ),
+            retry_on_blocked=True,
+            concurrency_settings=extract_module.CONCURRENCY_SETTINGS,
+            configure_logging=False,
+        )
+        deps.queue.drop.assert_not_awaited()
+
+    async def test_repeated_builds_use_unique_names(self, extractor, dependencies):
+        await extractor._build_crawler()
+        await extractor._build_crawler()
+        calls = dependencies.open_queue.await_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["name"] != calls[1].kwargs["name"]
+        assert dependencies.memory_factory.call_count == 2
+
+    async def test_open_failure_propagates(self, extractor, dependencies):
+        error = RuntimeError("cannot open queue")
+        dependencies.open_queue.side_effect = error
+        with pytest.raises(RuntimeError) as caught:
+            await extractor._build_crawler()
+        assert caught.value is error
+        dependencies.crawler_factory.assert_not_called()
+        dependencies.queue.drop.assert_not_awaited()
+
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    async def test_constructor_failure_cleans_queue_and_preserves_error(
+        self, extractor, dependencies, monkeypatch, cleanup_fails
+    ):
+        error = RuntimeError("crawler construction failed")
+        dependencies.crawler_factory.side_effect = error
+        log = MagicMock()
+        monkeypatch.setattr(extractor, "logger", log)
+        if cleanup_fails:
+            dependencies.queue.drop.side_effect = RuntimeError("drop failed")
+        with pytest.raises(RuntimeError) as caught:
+            await extractor._build_crawler()
+        assert caught.value is error
+        dependencies.queue.drop.assert_awaited_once_with()
+        assert log.exception.call_count == int(cleanup_fails)
+
+    async def test_constructor_cancellation_is_not_swallowed(self, extractor, dependencies):
+        dependencies.crawler_factory.side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await extractor._build_crawler()
+        dependencies.queue.drop.assert_awaited_once_with()
 
 
 class TestAttachHandlersRouting:
@@ -1011,6 +1081,7 @@ class TestTryFinalize:
         assert progress.is_complete is True
         assert any("book_id=123" in m and "1/1" in m for m in messages)
         context.add_requests.assert_not_awaited()
+        crawler.stop.assert_called_once_with(reason="Requested book count reached")
 
     async def test_incomplete_run_triggers_replacement(
         self, extractor, progress, handle_editions, monkeypatch
@@ -1078,9 +1149,9 @@ class TestHandleBook:
         assert "123" not in progress.pending
         context.add_requests.assert_awaited_once()
 
-    async def test_done_event_already_set_skips_everything(self, extractor, progress, handle_book):
-        """If progress.done_event is already set, handle_book should do nothing at all."""
-        progress.done_event.set()
+    async def test_target_already_met_skips_everything(self, extractor, progress, handle_book):
+        """If the target is already met, handle_book should do nothing at all."""
+        progress.records.extend({"book_id": str(i)} for i in range(progress.target_count))
 
         context = _context(Request.from_url("http://x", label="book", user_data={"book_id": "123"}))
         await handle_book(context)
@@ -1088,15 +1159,17 @@ class TestHandleBook:
         assert progress.pending == {}
         context.add_requests.assert_not_awaited()
 
-    async def test_done_event_set_during_parse_skips_enrichment(
+    async def test_completion_after_parse_skips_enrichment(
         self, extractor, progress, handle_book, monkeypatch
     ):
-        """The second done_event check (after parsing) should also short-circuit, even for a
-        successfully parsed book -- covers a concurrent handler completing the run mid-parse.
+        """The post-parse completion guard should skip enrichment.
+
+        The parser stub deliberately changes state to exercise the defensive
+        guard; synchronous parsing does not itself allow task interleaving.
         """
 
         def _parse_and_complete(soup, book_id):
-            progress.done_event.set()
+            progress.records.extend({"book_id": str(i)} for i in range(progress.target_count))
             return {
                 "is_nonexistent": False,
                 "editions_url": "http://editions",
@@ -1168,7 +1241,7 @@ class TestHandleBook:
     async def test_missing_book_id_raises(self, handle_book):
         """handle_book calls _require_book_id, so a request with no valid book_id should raise."""
         context = _context(Request.from_url("http://x", label="book", user_data={}))
-        with pytest.raises(ValueError, match="Missing or invalid book_id"):
+        with pytest.raises(TypeError, match="Expected book_id to be a string"):
             await handle_book(context)
 
 
@@ -1257,7 +1330,7 @@ class TestHandleAuthor:
     async def test_missing_book_id_raises(self, handle_author):
         """handle_author calls _require_book_id, so a request with no valid book_id should raise."""
         context = _context(Request.from_url("http://x", label="author", user_data={"book_id": 123}))
-        with pytest.raises(ValueError, match="Missing or invalid book_id"):
+        with pytest.raises(TypeError, match="Expected book_id to be a string"):
             await handle_author(context)
 
 
@@ -1322,7 +1395,7 @@ class TestHandleEditions:
     async def test_missing_book_id_raises(self, handle_editions):
         """handle_editions calls _require_book_id, so a request with no valid book_id should raise."""
         context = _context(Request.from_url("http://editions", label="editions", user_data={}))
-        with pytest.raises(ValueError, match="Missing or invalid book_id"):
+        with pytest.raises(TypeError, match="Expected book_id to be a string"):
             await handle_editions(context)
 
 
@@ -1455,149 +1528,250 @@ class TestHandleFailed:
         assert "http://x" not in progress.pending_editions_lookup
 
 
-class TestDriveToCompletion:
-    """Tests for _drive_to_completion."""
-
-    async def test_returns_when_crawler_run_finishes_naturally(self, extractor):
-        """If crawler.run() completes on its own, _drive_to_completion should simply return."""
-        progress = BookExtractor._Progress(target_count=1, tried_book_ids=set())
-        crawler = SimpleNamespace(run=AsyncMock(return_value=None))
-
-        await extractor._drive_to_completion(crawler, [], progress)
-
-        assert not progress.done_event.is_set()
-
-    async def test_cancels_run_task_when_done_event_fires_first(self, extractor):
-        """If done_event is set before crawler.run() finishes, the run task should be cancelled
-        rather than awaited to completion.
-        """
-        progress = BookExtractor._Progress(target_count=1, tried_book_ids=set())
-        run_started = asyncio.Event()
-
-        async def _fake_run(requests):
-            run_started.set()
-            await asyncio.sleep(10)  # would hang the test if not cancelled
-
-        crawler = SimpleNamespace(run=_fake_run)
-
-        async def _set_done_soon():
-            await run_started.wait()
-            progress.done_event.set()
-
-        setter_task = asyncio.create_task(_set_done_soon())
-        await asyncio.wait_for(extractor._drive_to_completion(crawler, [], progress), timeout=5)
-        await setter_task
-
-        assert progress.done_event.is_set()
-
-
-class TestResetRequestQueueStorage:
-    """Tests for _reset_request_queue_storage."""
-
-    async def test_opens_and_drops_the_default_queue(self, extractor, monkeypatch):
-        """_reset_request_queue_storage should open the default RequestQueue and drop it."""
-        fake_queue = AsyncMock()
-        open_mock = AsyncMock(return_value=fake_queue)
-        monkeypatch.setattr(extract_module.RequestQueue, "open", open_mock)
-
-        await extractor._reset_request_queue_storage()
-
-        open_mock.assert_awaited_once()
-        fake_queue.drop.assert_awaited_once()
-
-
 # ---------------------------------------------------------------------------
-# GROUP 6 -- extract() orchestration
+# GROUP 6 -- extract() orchestration and graceful completion
 # ---------------------------------------------------------------------------
 
 
 class TestExtractOrchestration:
-    """Tests for the public extract() entry point's orchestration logic.
+    """Exercise extract itself, mocking only its crawler and handler attachment."""
 
-    The real Crawlee crawl is never run here -- _build_crawler,
-    _attach_handlers, and _drive_to_completion are all mocked so these
-    tests verify extract()'s own control flow (seeding, early returns)
-    without touching the network.
-    """
+    @pytest.fixture
+    def lifecycle(self, extractor, monkeypatch):
+        queue = SimpleNamespace(drop=AsyncMock())
+        crawler = SimpleNamespace(
+            run=AsyncMock(),
+            get_request_manager=AsyncMock(return_value=queue),
+            stop=MagicMock(),
+        )
+        build = AsyncMock(return_value=crawler)
+        state = SimpleNamespace(progress=None)
 
-    @pytest.fixture(autouse=True)
-    def _mock_request_queue(self, monkeypatch):
-        """Patch RequestQueue.open/drop so _reset_request_queue_storage needs no real storage backend."""
-        fake_queue = AsyncMock()
-        monkeypatch.setattr(extract_module.RequestQueue, "open", AsyncMock(return_value=fake_queue))
+        def attach(actual_crawler, progress):
+            assert actual_crawler is crawler
+            state.progress = progress
 
-    async def test_returns_empty_list_for_non_positive_target(self, extractor):
-        """target_count <= 0 should short-circuit to an empty list with no crawl attempted."""
-        assert await extractor.extract(0, set()) == []
-        assert await extractor.extract(-5, set()) == []
+        attach_mock = MagicMock(side_effect=attach)
+        log = MagicMock()
+        monkeypatch.setattr(extractor, "_build_crawler", build)
+        monkeypatch.setattr(extractor, "_attach_handlers", attach_mock)
+        monkeypatch.setattr(extractor, "logger", log)
+        ids = iter(str(i) for i in range(1000, 2000))
 
-    async def test_returns_empty_list_when_no_ids_available(self, extractor, monkeypatch):
-        """If no untried book IDs can be drawn at all, extract() should return [] with a warning."""
+        def draw(progress):
+            book_id = next(ids)
+            progress.tried_book_ids.add(book_id)
+            return book_id
+
+        monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", draw)
+        return SimpleNamespace(
+            queue=queue,
+            crawler=crawler,
+            build=build,
+            attach=attach_mock,
+            state=state,
+            log=log,
+        )
+
+    @pytest.mark.parametrize("target", [0, -5])
+    async def test_non_positive_target_does_not_build(self, extractor, lifecycle, target):
+        assert await extractor.extract(target, set()) == []
+        lifecycle.build.assert_not_awaited()
+        lifecycle.attach.assert_not_called()
+        lifecycle.queue.drop.assert_not_awaited()
+
+    async def test_no_candidates_does_not_build(self, extractor, lifecycle, monkeypatch):
         monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: None)
-        result = await extractor.extract(5, set())
-        assert result == []
+        assert await extractor.extract(5, set()) == []
+        lifecycle.build.assert_not_awaited()
+        lifecycle.log.warning.assert_called_once()
 
-    async def test_seeds_crawl_and_returns_progress_records(self, extractor, monkeypatch):
-        """extract() should build a crawler, attach handlers, drive to completion, and return records."""
-        fake_records = [{"book_id": "1"}, {"book_id": "2"}]
+    async def test_awaits_build_runs_seeds_returns_records_and_drops(self, extractor, lifecycle):
+        records = [{"book_id": "1"}, {"book_id": "2"}]
 
-        async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
-            progress.records.extend(fake_records)
+        async def run(seed_requests):
+            assert len(seed_requests) == 2
+            lifecycle.state.progress.records.extend(records)
 
+        lifecycle.crawler.run.side_effect = run
+        tried = set()
+        assert await extractor.extract(2, tried) == records
+        lifecycle.build.assert_awaited_once_with()
+        lifecycle.attach.assert_called_once()
+        lifecycle.crawler.run.assert_awaited_once()
+        requests = lifecycle.crawler.run.await_args.args[0]
+        assert {request.user_data["book_id"] for request in requests} == tried
+        lifecycle.crawler.get_request_manager.assert_awaited_once_with()
+        lifecycle.queue.drop.assert_awaited_once_with()
+        lifecycle.log.warning.assert_not_called()
+
+    async def test_large_target_caps_seed_batch(self, extractor, lifecycle):
+        desired = extract_module.CONCURRENCY_SETTINGS.desired_concurrency
+        target = desired * 4 + 7
+        await extractor.extract(target, set())
+        requests = lifecycle.crawler.run.await_args.args[0]
+        assert len(requests) == max(desired * 4, 1)
+
+    async def test_none_candidates_are_filtered(self, extractor, lifecycle, monkeypatch):
+        candidates = iter(["101", None, "103"])
         monkeypatch.setattr(
-            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
+            BookExtractor._Progress, "next_random_book_id", lambda self: next(candidates)
         )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
-        )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
-        )
+        await extractor.extract(3, set())
+        requests = lifecycle.crawler.run.await_args.args[0]
+        assert [request.user_data["book_id"] for request in requests] == ["101", "103"]
 
-        result = await extractor.extract(2, set())
-        assert result == fake_records
+    async def test_defensive_result_slice(self, extractor, lifecycle):
+        async def run(seed_requests):
+            lifecycle.state.progress.records.extend({"book_id": str(i)} for i in range(5))
 
-    async def test_truncates_records_to_target_count(self, extractor, monkeypatch):
-        """extract() should never return more than target_count records, even if more were collected."""
+        lifecycle.crawler.run.side_effect = run
+        assert await extractor.extract(2, set()) == [{"book_id": "0"}, {"book_id": "1"}]
+        lifecycle.queue.drop.assert_awaited_once_with()
 
-        async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
-            progress.records.extend([{"book_id": str(i)} for i in range(5)])
+    async def test_early_finish_logs_warning(self, extractor, lifecycle):
+        async def run(seed_requests):
+            lifecycle.state.progress.records.append({"book_id": "1"})
 
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
-        )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
-        )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
-        )
+        lifecycle.crawler.run.side_effect = run
+        assert await extractor.extract(3, set()) == [{"book_id": "1"}]
+        lifecycle.log.warning.assert_called_once()
+        assert "1/3" in lifecycle.log.warning.call_args.args[0]
 
-        result = await extractor.extract(2, set())
-        assert len(result) == 2
+    @pytest.mark.parametrize("failure_stage", ["attach", "run"])
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    async def test_original_error_survives_cleanup(
+        self, extractor, lifecycle, failure_stage, cleanup_fails
+    ):
+        error = RuntimeError("primary failure")
+        if failure_stage == "attach":
+            lifecycle.attach.side_effect = error
+        else:
+            lifecycle.crawler.run.side_effect = error
+        if cleanup_fails:
+            lifecycle.queue.drop.side_effect = RuntimeError("cleanup failed")
+        with pytest.raises(RuntimeError) as caught:
+            await extractor.extract(1, set())
+        assert caught.value is error
+        lifecycle.queue.drop.assert_awaited_once_with()
+        assert lifecycle.log.exception.call_count == int(cleanup_fails)
 
-    async def test_logs_warning_when_crawl_ends_early(self, extractor, monkeypatch):
-        """If the drive loop ends with fewer records than target_count, extract() should log a warning."""
+    async def test_cleanup_failure_does_not_discard_success(self, extractor, lifecycle):
+        async def run(seed_requests):
+            lifecycle.state.progress.records.append({"book_id": "1"})
 
-        async def _fake_drive_to_completion(self, crawler, seed_requests, progress):
-            progress.records.extend([{"book_id": "1"}])  # only 1 of 3 requested
+        lifecycle.crawler.run.side_effect = run
+        lifecycle.queue.drop.side_effect = RuntimeError("drop failed")
+        assert await extractor.extract(1, set()) == [{"book_id": "1"}]
+        lifecycle.log.exception.assert_called_once()
 
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_build_crawler", lambda self: MagicMock()
-        )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_attach_handlers", lambda self, crawler, progress: None
-        )
-        monkeypatch.setattr(
-            extract_module.BookExtractor, "_drive_to_completion", _fake_drive_to_completion
-        )
+    async def test_get_request_manager_failure_is_logged(self, extractor, lifecycle):
+        lifecycle.crawler.get_request_manager.side_effect = RuntimeError("manager unavailable")
+        assert await extractor.extract(1, set()) == []
+        lifecycle.log.exception.assert_called_once()
+        lifecycle.queue.drop.assert_not_awaited()
 
-        messages = []
-        sink_id = logger.add(lambda msg: messages.append(msg), level="WARNING")
+    async def test_build_failure_propagates_without_running(self, extractor, lifecycle):
+        error = RuntimeError("build failed")
+        lifecycle.build.side_effect = error
+        with pytest.raises(RuntimeError) as caught:
+            await extractor.extract(1, set())
+        assert caught.value is error
+        lifecycle.attach.assert_not_called()
+        lifecycle.crawler.run.assert_not_awaited()
+        lifecycle.queue.drop.assert_not_awaited()
+
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    async def test_caller_cancellation_propagates(
+        self,
+        extractor,
+        lifecycle,
+        cleanup_fails,
+    ):
+        """Caller cancellation propagates after queue cleanup is attempted."""
+        started = asyncio.Event()
+
+        async def run(seed_requests):
+            started.set()
+            await asyncio.Event().wait()
+
+        lifecycle.crawler.run.side_effect = run
+
+        if cleanup_fails:
+            lifecycle.queue.drop.side_effect = RuntimeError("cleanup failed")
+
+        task = asyncio.create_task(extractor.extract(1, set()))
+
         try:
-            result = await extractor.extract(3, set())
-        finally:
-            logger.remove(sink_id)
+            await asyncio.wait_for(started.wait(), timeout=2)
 
-        assert result == [{"book_id": "1"}]
-        assert any("Crawl ended early" in m for m in messages)
+            task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=2)
+
+            assert task.cancelled()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        lifecycle.queue.drop.assert_awaited_once_with()
+        assert lifecycle.log.exception.call_count == int(cleanup_fails)
+
+
+class TestGracefulCompletion:
+    """Drive real handlers with fake requests/contexts, without a live crawler."""
+
+    async def test_late_enrichment_does_not_exceed_target(self, extractor, monkeypatch):
+        progress = BookExtractor._Progress(target_count=1, tried_book_ids=set())
+        crawler = _FakeCrawler()
+        extractor._attach_handlers(crawler, progress)
+        handle_editions = crawler.router.handlers[extract_module.LABEL_EDITIONS]
+        monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 2)
+        for book_id in ("101", "102"):
+            progress.pending[book_id] = {
+                "book_id": book_id,
+                "contributors": [],
+                "_awaiting_author": False,
+                "_awaiting_editions": True,
+            }
+        contexts = [
+            _context(
+                Request.from_url(
+                    f"https://example.com/editions/{book_id}",
+                    label=extract_module.LABEL_EDITIONS,
+                    user_data={"book_id": book_id},
+                )
+            )
+            for book_id in ("101", "102")
+        ]
+        for context in contexts:
+            await handle_editions(context)
+        assert [record["book_id"] for record in progress.records] == ["101"]
+        crawler.stop.assert_called_once_with(reason="Requested book count reached")
+        for context in contexts:
+            context.add_requests.assert_not_awaited()
+
+    async def test_incomplete_run_does_not_stop(self, extractor, monkeypatch):
+        progress = BookExtractor._Progress(target_count=2, tried_book_ids=set())
+        crawler = _FakeCrawler()
+        extractor._attach_handlers(crawler, progress)
+        progress.pending["101"] = {
+            "book_id": "101",
+            "contributors": [],
+            "_awaiting_author": False,
+            "_awaiting_editions": True,
+        }
+        monkeypatch.setattr(extractor, "_parse_editions_page", lambda soup: 2)
+        monkeypatch.setattr(BookExtractor._Progress, "next_random_book_id", lambda self: "102")
+        context = _context(
+            Request.from_url(
+                "https://example.com/editions/101",
+                label=extract_module.LABEL_EDITIONS,
+                user_data={"book_id": "101"},
+            )
+        )
+        await crawler.router.handlers[extract_module.LABEL_EDITIONS](context)
+        assert progress.successes == 1
+        crawler.stop.assert_not_called()
+        context.add_requests.assert_awaited_once()
