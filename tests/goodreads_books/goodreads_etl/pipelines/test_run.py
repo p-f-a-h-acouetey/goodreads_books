@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock
 import polars as pl
 import pytest
 
-import src.goodreads_etl.pipelines.run as run_module
-from src.goodreads_etl.pipelines.run import BookRunner
+import src.goodreads_books.goodreads_etl.pipelines.run as run_module
+from src.goodreads_books.goodreads_etl.pipelines.run import BookRunner
 
 
 def _make_record(book_id: str) -> dict:

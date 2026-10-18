@@ -33,3 +33,6 @@ htmlcov/
 
 # Formatting & linting
 .ruff_cache/
+
+# ZenML folders
+.zen

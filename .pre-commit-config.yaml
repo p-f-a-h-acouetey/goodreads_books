@@ -1,7 +1,7 @@
 repos:
   # Ruff: linting + formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.17.1
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
@@ -9,7 +9,7 @@ repos:
 
   # ty: static type checking
   - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.75
+    rev: v0.0.89
     hooks:
       - id: ty
 
@@ -23,6 +23,6 @@ repos:
 
   # uv lock: reproducible dependencies
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.7
+    rev: 0.13.1
     hooks:
       - id: uv-lock

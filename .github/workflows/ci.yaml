@@ -37,7 +37,7 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync --dev
       - name: Run pytest with coverage
-        run: uv run pytest tests/goodreads_etl/ --cov=src/goodreads_etl/ --cov-report=term-missing
+        run: uv run pytest
 
   release:
     needs: test
@@ -50,8 +50,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@v8.1.0
 
-      - name: Set up Python 3.12
-        run: uv python pin 3.12
+      - name: Set up Python 3.13
+        run: uv python pin 3.13
 
       - name: Sync dependencies
         run: uv sync

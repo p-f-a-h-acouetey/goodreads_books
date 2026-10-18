@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from loguru import logger
 
-from src.goodreads_etl.extractors.extract import BookExtractor
-from src.goodreads_etl.loaders.load import PARQUET_FILENAME_TEMPLATE, BookLoader
+from goodreads_books.goodreads_etl.extractors.extract import BookExtractor
+from src.goodreads_books.goodreads_etl.loaders.load import PARQUET_FILENAME_TEMPLATE, BookLoader
 
 # --- Sampling defaults ---------------------------------------------------------
 DEFAULT_SAMPLE_SIZE = 500_000
@@ -74,7 +74,7 @@ class BookRunner:
                 f"Target already met ({len(known_book_ids)}/{sample_size} books already scraped), "
                 "nothing to do"
             )
-            return None
+            return
 
         remaining_target = sample_size - len(known_book_ids)
         self.logger.info(
@@ -122,10 +122,10 @@ class BookRunner:
             collected_so_far += len(chunk_records)
 
         self.logger.info(
-            f"Pipeline complete -- {len(known_book_ids)}/{sample_size} total books now in the dataset"  # NOQA E501
+            f"Pipeline complete -- {len(known_book_ids)}/{sample_size} total books now in the dataset"
         )
 
         # NOTE: run() intentionally returns None -- callers (e.g. main.py)
         # don't need the collected data back in memory, since every batch
         # was already checkpointed to the Hub as it was produced above.
-        return None
+        return

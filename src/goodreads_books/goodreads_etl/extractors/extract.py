@@ -4,7 +4,7 @@ Owns everything needed to turn "collect N more books" into structured
 records, in one class: request building, page parsing, per-run crawl
 state, and the queue-based self-healing crawl itself.
 
-Uses Crawlee's BeautifulSoupCrawler with a single persistent RequestQueue
+Uses Crawlee's BeautifulSoupCrawler with a single isolated, in-memory RequestQueue
 per run -- one crawler.run(seed_requests) call processes the whole crawl,
 not one .run() call per page/book. Book, author, and editions pages are
 routed by label; any terminal outcome for a book (success, no usable
@@ -18,13 +18,13 @@ Exposes exactly one class, BookExtractor, with one public method:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import random
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from bs4 import BeautifulSoup
 from crawlee import ConcurrencySettings, Request
@@ -33,6 +33,7 @@ from crawlee.crawlers import (
     BeautifulSoupCrawler,
     BeautifulSoupCrawlingContext,
 )
+from crawlee.storage_clients import MemoryStorageClient
 from crawlee.storages import RequestQueue
 from loguru import logger
 
@@ -70,29 +71,31 @@ REQUEST_HANDLER_TIMEOUT_SECONDS = 60
 CONCURRENCY_SETTINGS = ConcurrencySettings(
     desired_concurrency=5,
     max_concurrency=10,
-    max_tasks_per_minute=60,  # ~1 request/second, matching Goodreads' documented API tolerance.
+    max_tasks_per_minute=60,  # Limit crawler task starts to 60 per minute.
 )
 
 # --- Contributor stats text patterns -------------------------------------------
 # Matched against an author profile page's plain text (not structured data --
 # Goodreads doesn't expose these two fields in the page's Apollo/NEXT_DATA cache).
-FOLLOWERS_PATTERN = re.compile(r"followers\s*\(([\d,]+)\)", re.I)
-DISTINCT_WORKS_PATTERN = re.compile(r"([\d,]+)\s+distinct\s+works?", re.I)
+FOLLOWERS_PATTERN = re.compile(r"followers\s*\(([\d,]+)\)", re.IGNORECASE)
+DISTINCT_WORKS_PATTERN = re.compile(r"([\d,]+)\s+distinct\s+works?", re.IGNORECASE)
 
 # --- Catalog guideline violation -----------------------------------------------
 # Goodreads shows this exact phrase on book pages it has delisted for policy
 # reasons; matching on it lets us distinguish "removed for cause" from
 # "never existed", since both otherwise look like an empty/missing page.
-CATALOG_GUIDELINE_PATTERN = re.compile(r"does\s+not\s+meet\s+our\s+catalog\s+guidelines", re.I)
+CATALOG_GUIDELINE_PATTERN = re.compile(
+    r"does\s+not\s+meet\s+our\s+catalog\s+guidelines", re.IGNORECASE
+)
 
 # --- Editions count -------------------------------------------------------------
 # Two patterns because Goodreads renders the editions-listing page
 # differently depending on total count: a paginated "Showing X-Y of N"
 # header for many editions, or a bare "N Editions" heading for few.
-EDITIONS_HEADING_PATTERN = re.compile(r"\b([\d,]+)\s+editions?\b", re.I)
+EDITIONS_HEADING_PATTERN = re.compile(r"\b([\d,]+)\s+editions?\b", re.IGNORECASE)
 EDITIONS_TOTAL_PATTERN = re.compile(
     r"showing\s+(?:[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)|all\s+([\d,]+))",
-    re.I,
+    re.IGNORECASE,
 )
 
 # --- Apollo cache recursion -------------------------------------------------------
@@ -119,7 +122,6 @@ class BookExtractor:
             pending: Maps book_id -> in-progress record, awaiting author/editions enrichment.
             pending_editions_lookup: Maps editions_url -> book_id, so the editions handler
                 knows which pending record to update.
-            done_event: Async event set once target_count records are collected.
         """
 
         target_count: int
@@ -127,7 +129,6 @@ class BookExtractor:
         records: list[dict[str, Any]] = field(default_factory=list)
         pending: dict[str, dict[str, Any]] = field(default_factory=dict)
         pending_editions_lookup: dict[str, str] = field(default_factory=dict)
-        done_event: asyncio.Event = field(default_factory=asyncio.Event)
 
         @property
         def successes(self) -> int:
@@ -162,7 +163,7 @@ class BookExtractor:
             return None
 
         def add_record(self, record: dict[str, Any]) -> bool:
-            """Store a completed record if capacity remains; signal completion if target is met.
+            """Store a completed record if capacity remains.
 
             Args:
                 record: The completed book record dict to store.
@@ -173,11 +174,6 @@ class BookExtractor:
             if self.is_complete:
                 return False
             self.records.append(record)
-            if self.is_complete:
-                # Wakes up _drive_to_completion's asyncio.wait(), which is
-                # what lets the crawl stop as soon as the target is hit
-                # instead of waiting for the whole queue to drain naturally.
-                self.done_event.set()
             return True
 
     def __init__(self) -> None:
@@ -535,7 +531,9 @@ class BookExtractor:
         """
         book_id = request.user_data.get("book_id")
         if not isinstance(book_id, str):
-            raise ValueError(f"Missing or invalid book_id in request user_data: {book_id!r}")
+            raise TypeError(
+                f"Expected book_id to be a string in request user_data, got {book_id!r}"
+            )
         return book_id
 
     def _optional_book_id(self, request: Request) -> str | None:
@@ -615,19 +613,36 @@ class BookExtractor:
 
     # --- Crawl construction and routing (private) ---
 
-    def _build_crawler(self) -> BeautifulSoupCrawler:
-        """Construct a bare BeautifulSoupCrawler with global concurrency settings applied.
+    async def _build_crawler(self) -> BeautifulSoupCrawler:
+        """Construct a crawler with an isolated, in-memory request queue.
 
-        Returns:
-            An un-routed BeautifulSoupCrawler instance.
+        A unique queue name keeps each extraction separate from earlier runs.
+        The same memory storage client is also used by the crawler's other
+        storage-backed components. This targets the current Crawlee API.
         """
-        return BeautifulSoupCrawler(
-            max_request_retries=MAX_REQUEST_RETRIES,
-            request_handler_timeout=timedelta(seconds=REQUEST_HANDLER_TIMEOUT_SECONDS),
-            retry_on_blocked=True,
-            concurrency_settings=CONCURRENCY_SETTINGS,
-            configure_logging=False,
+        storage_client = MemoryStorageClient()
+        request_queue = await RequestQueue.open(
+            name=f"goodreads-extract-{uuid4().hex}",
+            storage_client=storage_client,
         )
+
+        try:
+            return BeautifulSoupCrawler(
+                storage_client=storage_client,
+                request_manager=request_queue,
+                max_request_retries=MAX_REQUEST_RETRIES,
+                request_handler_timeout=timedelta(seconds=REQUEST_HANDLER_TIMEOUT_SECONDS),
+                retry_on_blocked=True,
+                concurrency_settings=CONCURRENCY_SETTINGS,
+                configure_logging=False,
+            )
+        except BaseException:
+            # Do not leave the opened queue cached if construction fails.
+            try:
+                await request_queue.drop()
+            except Exception:
+                self.logger.exception("Failed to clean up the unopened crawler's queue")
+            raise
 
     def _attach_handlers(
         self, crawler: BeautifulSoupCrawler, progress: BookExtractor._Progress
@@ -655,13 +670,13 @@ class BookExtractor:
             without ever needing an external retry loop.
             """
             if progress.is_complete:
-                return None
+                return
             new_id = progress.next_random_book_id()
             if new_id is None:
                 self.logger.warning(
                     "No untried book ID found within attempt limit -- ID space may be exhausted"
                 )
-                return None
+                return
             await context.add_requests([self._build_book_request(new_id)])
 
         async def _try_finalize(context: BeautifulSoupCrawlingContext, book_id: str) -> None:
@@ -673,27 +688,29 @@ class BookExtractor:
                 # Either this book_id isn't pending (already finalized or
                 # never started), or it's still waiting on author/editions
                 # enrichment -- either way, nothing to do yet.
-                return None
+                return
             progress.pending.pop(book_id)
             final_record = self._assemble_record(record)
             if not progress.add_record(final_record):
                 # add_record returns False only if the run already hit its
                 # target between this record starting and finishing --
                 # discard it silently rather than enqueue a replacement.
-                return None
+                return
             self.logger.info(
-                f"book_id={book_id}: collected ({progress.successes}/{progress.target_count} target)"  # NOQA E501
+                f"book_id={book_id}: collected ({progress.successes}/{progress.target_count} target)"
             )
-            if not progress.is_complete:
-                await _enqueue_replacement(context)
+            if progress.is_complete:
+                crawler.stop(reason="Requested book count reached")
+                return
+            await _enqueue_replacement(context)
 
         @crawler.router.handler(LABEL_BOOK)
         async def handle_book(context: BeautifulSoupCrawlingContext) -> None:
             """Route handler for Goodreads book pages."""
-            if progress.done_event.is_set():
+            if progress.is_complete:
                 # Target was already hit by another in-flight request --
                 # avoid doing wasted work or enqueuing anything further.
-                return None
+                return
 
             book_id = self._require_book_id(context.request)
             book_data = self._parse_book_page(context.soup, book_id)
@@ -701,10 +718,10 @@ class BookExtractor:
             if book_data["is_nonexistent"]:
                 # Terminal outcome: dead ID, immediately draw a replacement.
                 await _enqueue_replacement(context)
-                return None
+                return
 
-            if progress.done_event.is_set():
-                return None
+            if progress.is_complete:
+                return
 
             record = self._start_record(book_id, book_data)
             progress.pending[book_id] = record
@@ -731,7 +748,7 @@ class BookExtractor:
             if record is None:
                 # The book's record was already finalized or discarded
                 # (e.g. target hit) before this author page returned.
-                return None
+                return
 
             author_stats = self._parse_author_page(context.soup)
             if record.get("contributors"):
@@ -749,7 +766,7 @@ class BookExtractor:
 
             record = progress.pending.get(book_id)
             if record is None:
-                return None
+                return
 
             num_editions = self._parse_editions_page(context.soup)
             record["num_editions"] = num_editions
@@ -780,14 +797,14 @@ class BookExtractor:
                 if book_id is not None:
                     progress.pending.pop(book_id, None)
                 await _enqueue_replacement(bs_context)  # type: ignore
-                return None
+                return
 
             if book_id is None:
-                return None
+                return
 
             record = progress.pending.get(book_id)
             if record is None:
-                return None
+                return
 
             # A failed author/editions request just means that particular
             # enrichment never arrives -- clear its flag so the record can
@@ -801,109 +818,67 @@ class BookExtractor:
 
             await _try_finalize(bs_context, book_id)  # type: ignore
 
-    async def _drive_to_completion(
+    async def extract(
         self,
-        crawler: BeautifulSoupCrawler,
-        seed_requests: list[Request],
-        progress: BookExtractor._Progress,
-    ) -> None:
-        """Run the crawler until naturally finished or the target is met, whichever first.
+        target_count: int,
+        tried_book_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        """Collect up to target_count records using an isolated in-memory crawl.
 
-        Races the crawler's own run() coroutine against progress.done_event:
-        whichever finishes first wins, and if the target is hit before the
-        queue naturally empties, the still-running crawler task is
-        cancelled rather than left to drain the remaining queue.
-
-        Args:
-            crawler: Configured BeautifulSoupCrawler instance.
-            seed_requests: Initial batch of requests to seed the queue with.
-            progress: Shared mutable _Progress containing target/done_event.
-        """
-        run_task = asyncio.create_task(crawler.run(seed_requests))
-        done_wait_task = asyncio.create_task(progress.done_event.wait())
-
-        done, pending = await asyncio.wait(
-            {run_task, done_wait_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-
-        if done_wait_task in done and not run_task.done():
-            # Target was hit while the crawler was still running --
-            # cancel it rather than let it keep processing an already-full queue.
-            run_task.cancel()
-        for task in pending:
-            task.cancel()
-
-        try:
-            await run_task
-        except asyncio.CancelledError:
-            # Expected when we just cancelled run_task above; swallow it
-            # so a successful early-completion isn't reported as an error.
-            pass
-
-    async def _reset_request_queue_storage(self) -> None:
-        """Drop any request-queue state left over from a previous asyncio event loop.
-
-        Crawlee's file-system request queue client caches an asyncio.Lock
-        bound to whatever event loop was active when first created. Since
-        each notebook cell execution can run its own event loop, that lock
-        can end up bound to a dead loop on repeated runs; dropping the
-        queue forces a fresh client/lock on the next open().
-        """
-        queue = await RequestQueue.open()
-        await queue.drop()
-
-    async def extract(self, target_count: int, tried_book_ids: set[str]) -> list[dict[str, Any]]:
-        """Run a queue-based sampling crawl until target_count new valid records are collected.
-
-        This is the single public entry point BookRunner calls. Seeds
-        desired_concurrency * 4 initial book requests (capped at
-        target_count) so multiple books are in flight from the start,
-        then lets Crawlee's own AutoscaledPool (bounded by
-        CONCURRENCY_SETTINGS.max_tasks_per_minute) and the self-healing
-        replacement handlers keep the queue fed until either the target
-        is met or the queue naturally empties (ID space exhausted).
+        Seeds desired_concurrency * 4 initial book requests, capped at the
+        target. Route handlers enqueue replacements until the target is
+        reached or no more candidates can be drawn. Target completion stops
+        the crawler gracefully; already-running requests may finish first.
 
         Args:
-            target_count: Number of NEW valid book records to collect.
-            tried_book_ids: Set of book_ids to exclude (already scraped in
-                prior runs); mutated in place with every ID drawn this run.
+            target_count: Number of new valid book records to collect.
+            tried_book_ids: IDs excluded from sampling. Mutated in place
+                when an ID is drawn, not only after successful collection.
 
         Returns:
-            List of up to target_count valid book record dicts.
+            Up to target_count fully assembled records. Queue state is not
+            persisted; durable checkpoints remain the caller's responsibility.
+
+        Raises:
+            Exception: Crawl failures propagate after queue cleanup is attempted.
+                Caller cancellation is not converted into successful completion.
         """
         if target_count <= 0:
             return []
 
-        await self._reset_request_queue_storage()
+        progress = self._Progress(
+            target_count=target_count,
+            tried_book_ids=tried_book_ids,
+        )
 
-        progress = self._Progress(target_count=target_count, tried_book_ids=tried_book_ids)
-
-        # Seed enough requests up front that the pool has real concurrency
-        # to work with from the very first tick, capped so we never seed
-        # more books than we actually need.
-        seed_count = min(max(CONCURRENCY_SETTINGS.desired_concurrency * 4, 1), target_count)
+        seed_count = min(
+            max(CONCURRENCY_SETTINGS.desired_concurrency * 4, 1),
+            target_count,
+        )
         seed_ids = [progress.next_random_book_id() for _ in range(seed_count)]
         seed_requests = [
             self._build_book_request(book_id) for book_id in seed_ids if book_id is not None
         ]
+
         if not seed_requests:
-            # next_random_book_id() returned None for every attempt -- the
-            # untried ID space is exhausted before we even started.
             self.logger.warning("Unable to seed crawl -- no untried book IDs available")
             return []
 
-        crawler = self._build_crawler()
-        self._attach_handlers(crawler, progress)
-
-        await self._drive_to_completion(crawler, seed_requests, progress)
+        crawler = await self._build_crawler()
+        try:
+            self._attach_handlers(crawler, progress)
+            await crawler.run(seed_requests)
+        finally:
+            try:
+                request_queue = await crawler.get_request_manager()
+                await request_queue.drop()
+            except Exception:
+                self.logger.exception("Failed to clean up the extraction request queue")
 
         if progress.successes < progress.target_count:
             self.logger.warning(
                 f"Crawl ended early: {progress.successes}/{progress.target_count} collected "
-                "(queue exhausted or ID space too sparse)"
+                "(queue exhausted or no fresh candidate found within the sampling limit)"
             )
 
-        # Slice defensively to target_count -- in practice this should
-        # already hold since add_record() refuses once is_complete is True,
-        # but this guarantees the contract even if that invariant ever slips.
         return progress.records[:target_count]
